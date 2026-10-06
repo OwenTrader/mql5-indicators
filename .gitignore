@@ -1,0 +1,9 @@
+# MQL5 编译产物（源码 .mq5 才是真源，.ex5 由 MetaEditor F7 生成）
+*.ex5
+*.ex4
+
+# 编辑器 / 终端杂项
+*.log
+Thumbs.db
+Desktop.ini
+.DS_Store
