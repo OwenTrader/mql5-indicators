@@ -7,3 +7,6 @@
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# 本机自用：双击一键 commit + push 脚本（不入库）
+auto_commit_push.bat

@@ -72,6 +72,7 @@ private:
    string           m_prefix;        // 对象名前缀
    int              m_intervalPts;   // 实际生效的网格间隔(点)
    datetime         m_lastUpdate;    // 上次同步时间(节流用)
+   bool             m_styleDirty;    // 配置刚变更 -> 需对已存在对象重套样式
    GridAlertState   m_stateInt;
    GridAlertState   m_stateMid;
 
@@ -131,19 +132,77 @@ private:
       return(10);
      }
 
+   //--- 类型 -> 名称 token
+   string             TypeToken(const ENUM_GRIDLINE_TYPE type) const
+     {
+      switch(type)
+        {
+         case GRIDLINE_INTEGER: return("INT_");
+         case GRIDLINE_QUARTER: return("QTR_");
+         case GRIDLINE_MID:     return("MID_");
+         case GRIDLINE_EIGHTH:  return("EIG_");
+        }
+      return("INT_");
+     }
+
+   //--- 名称 -> 类型：用 "_XXX_" 全片段精确匹配，避免子串误判
+   ENUM_GRIDLINE_TYPE TypeFromName(const string name)
+     {
+      if(StringFind(name, "_QTR_") > 0)
+         return(GRIDLINE_QUARTER);
+      if(StringFind(name, "_MID_") > 0)
+         return(GRIDLINE_MID);
+      if(StringFind(name, "_EIG_") > 0)
+         return(GRIDLINE_EIGHTH);
+      return(GRIDLINE_INTEGER);
+     }
+
+   //--- 名称 -> 价格
+   double             PriceFromName(const string name,const bool is_label) const
+     {
+      string s = name;
+      StringReplace(s, m_prefix + (is_label ? "LABEL_" : "LINE_"), "");
+      StringReplace(s, "INT_", "");
+      StringReplace(s, "QTR_", "");
+      StringReplace(s, "MID_", "");
+      StringReplace(s, "EIG_", "");
+      return(StringToDouble(s));
+     }
+
+   //--- 样式应用：颜色/线型/线宽（线条）或 文本/颜色/字体/字号（标签）
+   //    创建时调用，配置变更后也会对已存在对象重套，保证参数改动即时生效
+   void               ApplyProperties(const string symbol,const string name)
+     {
+      bool is_label = (StringFind(name, "LABEL_") > 0);
+      ENUM_GRIDLINE_TYPE type = TypeFromName(name);
+
+      if(is_label)
+        {
+         double price = PriceFromName(name, true);
+         ObjectSetString(0, name, OBJPROP_TEXT,
+                         DoubleToString(price, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)));
+         ObjectSetInteger(0, name, OBJPROP_COLOR, m_cfg.LabelColor);
+         ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+         ObjectSetInteger(0, name, OBJPROP_FONTSIZE, GetFontSize(type));
+         ObjectSetString(0, name, OBJPROP_FONT, m_cfg.LabelFont);
+         ObjectSetInteger(0, name, OBJPROP_BACK, false);
+        }
+      else
+        {
+         ObjectSetInteger(0, name, OBJPROP_COLOR, GetColor(type));
+         ObjectSetInteger(0, name, OBJPROP_STYLE, GetStyle(type));
+         ObjectSetInteger(0, name, OBJPROP_WIDTH, GetWidth(type));
+         ObjectSetInteger(0, name, OBJPROP_SELECTABLE, true);
+         ObjectSetInteger(0, name, OBJPROP_BACK, true);   // 线条在K线下方
+        }
+     }
+
    //--- 加入需求列表（含标签）
    void               AddToRequired(double price,const ENUM_GRIDLINE_TYPE type,
                                     string &arr[],int &count,const int digits)
      {
       price = NormalizeDouble(price, digits);
-      string type_str;
-      switch(type)
-        {
-         case GRIDLINE_INTEGER: type_str = "INT_"; break;
-         case GRIDLINE_QUARTER: type_str = "QTR_"; break;
-         case GRIDLINE_MID:     type_str = "MID_"; break;
-         case GRIDLINE_EIGHTH:  type_str = "EIG_"; break;
-        }
+      string type_str = TypeToken(type);
       string name = m_prefix + "LINE_" + type_str + DoubleToString(price, digits);
 
       if(count >= ArraySize(arr))
@@ -161,7 +220,7 @@ private:
         }
      }
 
-   //--- 更新现有对象（标签跟随最新K线移动）
+   //--- 刷新已存在对象：标签跟随最新K线移动；配置变更后重套样式
    void               UpdateObjectProperties(const string symbol,const ENUM_TIMEFRAMES tf,const string name)
      {
       if(StringFind(name, "LABEL_") > 0)
@@ -170,49 +229,24 @@ private:
          datetime label_time = GetLabelTime(symbol, tf);
          ObjectMove(0, name, 0, label_time, price);
         }
+
+      //--- 仅当本次会话的参数相比对象建立时发生过变化，才重写样式
+      if(m_styleDirty)
+         ApplyProperties(symbol, name);
      }
 
-   //--- 创建新对象
+   //--- 创建新对象（创建后立即套用当前样式）
    void               CreateObject(const string symbol,const ENUM_TIMEFRAMES tf,const string name)
      {
-      bool is_label = (StringFind(name, "LABEL_") > 0);
-      ENUM_GRIDLINE_TYPE type = GRIDLINE_INTEGER;
-      if(StringFind(name, "QTR_") > 0)
-         type = GRIDLINE_QUARTER;
-      else if(StringFind(name, "MID_") > 0)
-         type = GRIDLINE_MID;
-      else if(StringFind(name, "EIG_") > 0)
-         type = GRIDLINE_EIGHTH;
-
-      string price_str = name;
-      StringReplace(price_str, m_prefix + (is_label ? "LABEL_" : "LINE_"), "");
-      if(type == GRIDLINE_INTEGER)      StringReplace(price_str, "INT_", "");
-      else if(type == GRIDLINE_QUARTER) StringReplace(price_str, "QTR_", "");
-      else if(type == GRIDLINE_MID)     StringReplace(price_str, "MID_", "");
-      else if(type == GRIDLINE_EIGHTH)  StringReplace(price_str, "EIG_", "");
-
-      double price = StringToDouble(price_str);
+      bool   is_label = (StringFind(name, "LABEL_") > 0);
+      double price    = PriceFromName(name, is_label);
 
       if(is_label)
-        {
          ObjectCreate(0, name, OBJ_TEXT, 0, GetLabelTime(symbol, tf), price);
-         ObjectSetString(0, name, OBJPROP_TEXT,
-                         DoubleToString(price, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)));
-         ObjectSetInteger(0, name, OBJPROP_COLOR, m_cfg.LabelColor);
-         ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
-         ObjectSetInteger(0, name, OBJPROP_FONTSIZE, GetFontSize(type));
-         ObjectSetString(0, name, OBJPROP_FONT, m_cfg.LabelFont);
-         ObjectSetInteger(0, name, OBJPROP_BACK, false);
-        }
       else
-        {
          ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
-         ObjectSetInteger(0, name, OBJPROP_COLOR, GetColor(type));
-         ObjectSetInteger(0, name, OBJPROP_STYLE, GetStyle(type));
-         ObjectSetInteger(0, name, OBJPROP_WIDTH, GetWidth(type));
-         ObjectSetInteger(0, name, OBJPROP_SELECTABLE, true);
-         ObjectSetInteger(0, name, OBJPROP_BACK, true);   // 线条在K线下方
-        }
+
+      ApplyProperties(symbol, name);
      }
 
    //--- 预警检查（含30分钟冷却）
@@ -304,10 +338,12 @@ private:
       ArrayResize(required_names, req_count);
 
       //--- 2. 遍历已有对象：在需求列表则更新，否则删除
+      //    注意：ObjectsTotal 与 ObjectName 必须用同一套 (sub_window, type) 过滤口径，
+      //    否则两者索引域不一致会漏掉对象，导致样式刷新/删除失配
       int total_obj = ObjectsTotal(0, 0, -1);
       for(int i = total_obj - 1; i >= 0; i--)
         {
-         string name = ObjectName(0, i);
+         string name = ObjectName(0, i, 0, -1);
          if(StringFind(name, m_prefix) != 0)
             continue;                             // 不是本模块的对象
 
@@ -337,10 +373,13 @@ private:
 
       //--- 4. 预警检查
       CheckAlerts(symbol, digits, base_price, grid_size, base_level);
+
+      //--- 5. 本轮已覆盖全部在列对象（含新创建），样式与配置一致
+      m_styleDirty = false;
      }
 
 public:
-                     CGridModule(void) : m_prefix("MSGL_"), m_intervalPts(0), m_lastUpdate(0) {}
+                     CGridModule(void) : m_prefix("MSGL_"), m_intervalPts(0), m_lastUpdate(0), m_styleDirty(true) {}
                     ~CGridModule(void) { Release(); }
 
    bool               Enabled(void) const { return(m_cfg.Enabled); }
@@ -349,6 +388,7 @@ public:
    bool               Create(const string symbol,const ENUM_TIMEFRAMES tf,const GridSettings &cfg)
      {
       m_cfg = cfg;
+      m_styleDirty = true;              // 参数可能已变更：首次同步时对已有对象重套样式
       if(!m_cfg.Enabled)
          return(true);
 
@@ -412,10 +452,10 @@ public:
      }
 
    //--- 释放：删除本模块全部对象
+   //    注意：不能因为 Enabled=false 就跳过删除，否则「先启用再关闭」会留下
+   //    残留线条，而这些残留对象不会再走样式刷新路径
    void               Release(void)
      {
-      if(!m_cfg.Enabled)
-         return;
       ObjectsDeleteAll(0, m_prefix);
      }
 

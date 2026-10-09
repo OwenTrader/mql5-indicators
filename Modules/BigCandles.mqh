@@ -3,6 +3,10 @@
 //|  模块5：K线着色模块（大实体/大影线/普通K线 6色分类 + ATR自适应）     |
 //|  由 candle.mq5 (BigBodyCandles) 提炼而来，接入主指标 MySystem       |
 //|                                                                  |
+//|  可选：HideNormalCandles=true（默认开）时不绘制普通K线，             |
+//|        只高亮特殊K线（大实体/大影线），普通K线交由图表原生绘制，      |
+//|        避免指标重复覆盖原生K线。                                    |
+//|                                                                  |
 //|  设计约定（同 TrendMA / OscSignal）：                              |
 //|  · 模块内不定义 input，参数由主指标通过 struct 传入                |
 //|  · 模块自管 ATR 句柄的创建与释放                                   |
@@ -27,6 +31,7 @@ enum ENUM_CANDLE_TYPE
 struct CandleSettings
   {
    bool     Enabled;              // 启用K线着色
+   bool     HideNormalCandles;    // 不绘制普通K线(仅高亮特殊K线，原生K线透出)
    color    BullBodyColor;        // 大实体阳线
    color    BearBodyColor;        // 大实体阴线
    color    ShadowBullColor;      // 大下影线（偏多）
@@ -90,6 +95,16 @@ public:
                     ~CBigCandleModule(void) { Release(); }
 
    bool               Enabled(void) const { return(m_cfg.Enabled); }
+
+   //--- 该颜色索引对应的K线是否应当绘制（主指标据此决定是否写入 OHLC 缓冲区）
+   //    HideNormalCandles=true 时，普通阳/阴线不写 OHLC -> 终端按 PLOT_EMPTY_VALUE
+   //    规则跳过绘制，图上保留原生K线，仅特殊K线以高亮色覆盖。
+   bool               ShouldDraw(const int colorIndex) const
+     {
+      if(!m_cfg.HideNormalCandles)
+         return(true);
+      return(colorIndex != CANDLE_NORMAL_BULL && colorIndex != CANDLE_NORMAL_BEAR);
+     }
 
    //--- 初始化：点值、周期阈值、ATR句柄
    //    注：图表周期切换会导致指标重新初始化，无需运行中检查周期

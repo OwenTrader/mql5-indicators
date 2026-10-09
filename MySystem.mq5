@@ -15,9 +15,10 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.10"
+#property version     "1.22"
 #property description "模块化交易系统骨架：主指标聚合器"
-#property description "趋势(三线MACD)方向/金叉死叉 + 震荡(Stoch)入场触发 + K线着色 + 网格线 + 倒计时"
+#property description "主信号：MACD二线交叉(DIF上穿/下穿DEA，与 iMACD / 2linemacd 同口径) + K线着色 + 网格线 + 倒计时"
+#property description "备选：震荡(Stoch)触发 / MACD柱动量耗尽确认 / 双均线过滤(可选，默认关闭)"
 #property indicator_chart_window
 #property indicator_buffers 7
 #property indicator_plots   3
@@ -38,29 +39,40 @@
 
 #include "Modules\MacdTrend.mqh"
 #include "Modules\OscSignal.mqh"
+#include "Modules\RsiFilter.mqh"
 #include "Modules\Countdown.mqh"
 #include "Modules\GridLines.mqh"
 #include "Modules\BigCandles.mqh"
+#include "Modules\TrendMA.mqh"    // 模块6：双均线趋势（可选，默认关闭；参数组在设置页最底部）
 
 //--- 信号组合模式
 enum ENUM_SIGNAL_MODE
   {
-   MODE_FILTER = 0,   // 震荡触发 + 趋势过滤(默认)
-   MODE_ANY    = 1,   // 任一模块触发(测试用)
-   MODE_MACD   = 2    // MACD三线金叉/死叉直接触发
+   MODE_FILTER   = 0,   // 震荡触发 + MACD方向过滤
+   MODE_ANY      = 1,   // 仅震荡触发(测试用)
+   MODE_MACD     = 2,   // ★MACD二线交叉(DIF上穿/下穿DEA) —— 默认
+   MODE_MOMENTUM = 3    // MACD柱动量耗尽确认(加速→减速→反向穿越)
   };
 
 //=== 参数：分组收纳，只在这里暴露可调项 ==============================
 input group "══════ 系统设置 ══════"
-input ENUM_SIGNAL_MODE InpMode       = MODE_FILTER; // 信号组合模式
+input ENUM_SIGNAL_MODE InpMode       = MODE_MACD;   // 信号组合模式(默认=MACD二线交叉)
 input bool             InpOnlyClosed = true;        // 仅收盘bar出信号(防重绘)
 
-input group "══════ 模块1：趋势(MACD 三线) ══════"
+input group "══════ 模块1：MACD 二线交叉(主信号，同 iMACD 口径) ══════"
 input int                InpMacdFast     = 12;          // 快线EMA周期
 input int                InpMacdSlow     = 26;          // 慢线EMA周期
-input int                InpMacdSignal   = 9;           // 信号线DEA周期(EMA平滑)
+input int                InpMacdSignal   = 9;           // 信号线DEA周期(SMA平滑，同iMACD)
 input ENUM_APPLIED_PRICE InpMacdPrice    = PRICE_CLOSE; // 应用价格
-input double             InpMacdHistMult = 2.0;         // MACD柱放大倍数(仅影响柱高)
+input double             InpMacdHistMult = 1.0;         // 柱放大倍数(1.0=与2linemacd柱值一致)
+
+input group "══════ 模块1b：MACD动量确认(仅 MODE_MOMENTUM 生效) ══════"
+input int    InpMacdRunLen    = 6;     // 加速段最少连续柱数
+input int    InpMacdDecelMin  = 1;     // 减速段最少连续柱数
+input int    InpMacdLookback  = 50;    // 结构最大回看柱数
+input bool   InpMacdUseRSI    = false; // 叠加RSI方向过滤(顺势确认，会明显减少信号)
+input int    InpMacdRSIPeriod = 14;    // RSI周期(仅上面开关开启时生效)
+input double InpMacdRSILevel  = 50.0;  // RSI多空分界
 
 input group "══════ 模块2：震荡(Stoch) ══════"
 input int    InpOscK         = 14;    // %K 周期
@@ -102,7 +114,7 @@ input ENUM_LINE_STYLE InpGridMidStyle    = STYLE_SOLID;       // 中位线线型
 input int             InpGridMidWidth    = 1;                 // 中位线线宽
 input int             InpGridMidFontSize = 16;                // 中位线标签字号
 input bool            InpGridAlertMid    = false;             // 中位线预警
-input bool            InpGridShowEig     = false;             // 显示八分位线条
+input bool            InpGridShowEig     = true;              // 显示八分位线条
 input color           InpGridEigColor    = clrTeal;           // 八分位颜色
 input ENUM_LINE_STYLE InpGridEigStyle    = STYLE_DASHDOTDOT;  // 八分位线型
 input int             InpGridEigWidth    = 1;                 // 八分位线宽
@@ -113,6 +125,7 @@ input string          InpGridLabelFont   = "Consolas";        // 标签字体
 
 input group "══════ 模块5：K线着色 ══════"
 input bool   InpCandleEnabled  = true;               // 启用K线着色
+input bool   InpCdlHideNormal  = true;               // 不绘制普通K线(仅高亮特殊K线)
 input color  InpCdlBullBody    = clrLime;            // 大实体阳线颜色
 input color  InpCdlBearBody    = clrRed;             // 大实体阴线颜色
 input color  InpCdlShadowBull  = clrDeepSkyBlue;     // 大下影线K线颜色(偏多)
@@ -141,12 +154,22 @@ input bool   InpCdlAlertBody   = true;               // 大实体K线预警
 input bool   InpCdlAlertShadow = true;               // 大影线K线预警
 input bool   InpCdlDebug       = false;              // 显示调试信息
 
+//=== 可选模块：参数组按约定统一排在设置页最底部，默认关闭、不参与信号 ===
+input group "══════ 模块6：双均线趋势(可选，默认关闭) ══════"
+input bool               InpMaEnabled = false;          // 启用双均线模块
+input int                InpMaFast    = 20;             // 快线周期
+input int                InpMaSlow    = 60;             // 慢线周期
+input ENUM_MA_METHOD     InpMaMethod  = MODE_EMA;       // 均线算法
+input ENUM_APPLIED_PRICE InpMaPrice   = PRICE_CLOSE;    // 应用价格
+
 //--- 模块实例（全局单例）
 CMacdModule      g_macd;
 COscModule       g_osc;
+CRsiFilter       g_rsi;
 CCountdownModule g_cd;
 CGridModule      g_grid;
 CBigCandleModule g_candle;
+CTrendModule     g_ma;      // 模块6：双均线（默认未启用，未启用时不创建句柄）
 
 //--- 指标缓冲区
 double CandleOpen[];      // 模块5：K线着色 O/H/L/C
@@ -189,10 +212,12 @@ int OnInit()
    PlotIndexSetDouble(2, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
    int minBars = MathMax(InpMacdSlow + InpMacdSignal, InpOscK + InpOscD + InpOscSlowing) + 5;
+   if(InpMaEnabled)
+      minBars = MathMax(minBars, InpMaSlow + 5);   // 双均线启用时预留其预热区
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.1");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.22");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -204,6 +229,16 @@ int OnInit()
    mc.HistMultiplier = InpMacdHistMult;
    if(!g_macd.Create(_Symbol, _Period, mc))
       return(INIT_FAILED);
+
+   //--- 模块1b：RSI 过滤器（可选；仅当开关开启时才创建句柄）
+   if(InpMacdUseRSI)
+     {
+      RsiSettings rc;
+      rc.Period = InpMacdRSIPeriod;
+      rc.Level  = InpMacdRSILevel;
+      if(!g_rsi.Create(_Symbol, _Period, rc))
+         return(INIT_FAILED);
+     }
 
    OscSettings oc;
    oc.KPeriod   = InpOscK;
@@ -262,6 +297,7 @@ int OnInit()
 
    CandleSettings bc;
    bc.Enabled              = InpCandleEnabled;
+   bc.HideNormalCandles    = InpCdlHideNormal;
    bc.BullBodyColor        = InpCdlBullBody;
    bc.BearBodyColor        = InpCdlBearBody;
    bc.ShadowBullColor      = InpCdlShadowBull;
@@ -292,9 +328,22 @@ int OnInit()
    if(!g_candle.Create(_Symbol, _Period, bc))
       return(INIT_FAILED);
 
-   //--- 倒计时/网格线任一启用即开启秒级定时器（网格模块内部自行节流）
-   if(InpCdEnabled || InpGridEnabled)
-      EventSetTimer(1);
+   //--- 模块6：双均线趋势（可选，默认关闭；关闭时不创建句柄，零开销）
+   if(InpMaEnabled)
+     {
+      TrendSettings tc;
+      tc.FastPeriod = InpMaFast;
+      tc.SlowPeriod = InpMaSlow;
+      tc.Method     = InpMaMethod;
+      tc.Price      = InpMaPrice;
+      if(!g_ma.Create(_Symbol, _Period, tc))
+         return(INIT_FAILED);
+     }
+
+   //--- 秒级定时器：为倒计时提供稳定的秒级刷新（网格模块内部自行节流）
+   //    注：即使定时器在个别环境下不回调，OnCalculate 每 tick 也会刷新外观层，
+   //    只是刷新频率取决于行情节奏（活跃品种通常每秒多次）。
+   EventSetTimer(1);
 
    //--- 首次绘制网格线
    g_grid.Update(_Symbol, _Period);
@@ -306,9 +355,11 @@ void OnDeinit(const int reason)
   {
    g_macd.Release();
    g_osc.Release();
+   g_rsi.Release();
    g_cd.Release();
    g_grid.Release();
    g_candle.Release();
+   g_ma.Release();          // 模块6：未启用时句柄为 INVALID_HANDLE，释放无害
    EventKillTimer();
   }
 //+------------------------------------------------------------------+
@@ -324,16 +375,22 @@ int OnCalculate(const int rates_total,
                 const int &spread[])
   {
    int minBars = MathMax(InpMacdSlow + InpMacdSignal, InpOscK + InpOscD + InpOscSlowing) + 5;
-   if(rates_total < minBars)
-      return(0);
+   if(InpMaEnabled)
+      minBars = MathMax(minBars, InpMaSlow + 5);
 
-   //--- 模块5：ATR 数据就绪检查（未就绪则等待下个Tick）
-   if(!g_candle.Prepare(rates_total))
-      return(0);
+   //--- ★ 外观层：倒计时 / 网格线，必须在最前面无条件执行
+   //    历史故障复盘：这两个 Update 原先排在函数末尾，而函数上半部分散布着
+   //    "数据未就绪就 return(0)" 的守卫；只要守卫被触发，本 tick 的倒计时与
+   //    网格线就整轮不刷新，表现为"倒计时定格不动 / 只画了一次"。
+   //    外观层不依赖任何指标数据，因此提到最前，且永不被后续逻辑短路。
+   g_cd.Update(_Symbol, _Period);       // 模块3：倒计时 + 实时价格
+   g_grid.Update(_Symbol, _Period);     // 模块4：网格线（模块内部自行节流）
 
-   //--- 模块1：三线MACD 批量计算（DIF/DEA/柱），循环内只查表
-   if(!g_macd.Calculate(rates_total, prev_calculated))
-      return(0);
+   //--- ★ 数据层：就绪与否只影响"信号层"，不再中断整个 OnCalculate
+   bool enough = (rates_total >= minBars);
+   g_candle.Prepare(rates_total);                                        // 模块5：ATR（可选，未就绪也不影响着色）
+   bool macdOk = enough && g_macd.Calculate(rates_total, prev_calculated); // 模块1：三线 MACD
+   bool rsiOk  = (!InpMacdUseRSI || g_rsi.Prepare(rates_total, prev_calculated)); // 模块1b：RSI
 
    //--- 首次计算：清空信号缓冲区，避免历史区出现乱值
    if(prev_calculated == 0)
@@ -343,11 +400,13 @@ int OnCalculate(const int rates_total,
      }
 
    //--- 增量计算：K线着色需覆盖全部bar，故首次从0开始
-   int start = (prev_calculated > 0) ? prev_calculated - 1 : 0;
+   int start = (prev_calculated > 0 && prev_calculated <= rates_total) ? prev_calculated - 1 : 0;
 
+   //--- 5-1 K线着色：独立于 MACD/Stoch 就绪状态，永远写满 [start, rates_total)
    for(int i = start; i < rates_total; i++)
      {
       //--- 模块5：K线着色（每根bar都要写，否则新bar会出现垃圾值）
+      //    先全部置 EMPTY_VALUE = 「不绘制」，再按分类决定是否覆盖真实 OHLC
       CandleOpen[i]  = EMPTY_VALUE;
       CandleHigh[i]  = EMPTY_VALUE;
       CandleLow[i]   = EMPTY_VALUE;
@@ -355,22 +414,38 @@ int OnCalculate(const int rates_total,
       CandleColor[i] = 0;
       if(g_candle.Enabled())
         {
-         CandleOpen[i]  = open[i];
-         CandleHigh[i]  = high[i];
-         CandleLow[i]   = low[i];
-         CandleClose[i] = close[i];
-         CandleColor[i] = g_candle.ColorIndex(_Symbol, _Period, i, rates_total, prev_calculated,
-                                              open, high, low, close);
+         //--- 分类（内部顺带处理预警，故须在「是否绘制」判定之前调用）
+         int cidx = g_candle.ColorIndex(_Symbol, _Period, i, rates_total, prev_calculated,
+                                        open, high, low, close);
+
+         //--- 「不绘制普通K线」时，普通阳/阴线保持 EMPTY_VALUE -> 图表原生K线透出，
+         //    仅大实体/大影线等特殊K线写入 OHLC 覆盖显示
+         if(g_candle.ShouldDraw(cidx))
+           {
+            CandleOpen[i]  = open[i];
+            CandleHigh[i]  = high[i];
+            CandleLow[i]   = low[i];
+            CandleClose[i] = close[i];
+            CandleColor[i] = cidx;
+           }
         }
 
       //--- 信号缓冲区清空
       BufBuy[i]  = EMPTY_VALUE;
       BufSell[i] = EMPTY_VALUE;
 
-      //--- 历史不足时不出信号（K线着色不受此限制）
-      if(i < minBars)
-         continue;
+     }
 
+   //--- 5-2 信号层：数据未就绪时仅保留上面的着色结果，本轮不合成信号
+   if(!macdOk || !rsiOk)
+     {
+      ChartRedraw(0);
+      return(rates_total);
+     }
+
+   //--- 历史不足的bar不出信号（K线着色不受此限制，已在上一步写完）
+   for(int i = MathMax(start, minBars); i < rates_total; i++)
+     {
       //--- 防重绘：最右一根未收盘bar不出信号
       if(InpOnlyClosed && i == rates_total - 1)
          continue;
@@ -392,25 +467,47 @@ int OnCalculate(const int rates_total,
             sell = (trig < 0);
             break;
          case MODE_MACD:
-            buy  = (cross > 0);               // DIF上穿DEA(柱翻红) -> 买
-            sell = (cross < 0);               // DIF下穿DEA(柱翻绿) -> 卖
+            //--- 主信号：2linemacd 两条线的交叉点（DIF 上穿 DEA 买 / 下穿 DEA 卖）
+            buy  = (cross > 0);
+            sell = (cross < 0);
             break;
+         case MODE_MOMENTUM:
+           {
+            // 动量耗尽：加速段 -> 减速段 -> 反向穿越，只在柱的峰/谷处认信号
+            int mom = g_macd.MomentumCross(i, InpMacdRunLen, InpMacdDecelMin, InpMacdLookback);
+            if(mom > 0)
+               buy  = (!InpMacdUseRSI || g_rsi.State(i) > 0);   // RSI站队多头才买
+            else if(mom < 0)
+               sell = (!InpMacdUseRSI || g_rsi.State(i) < 0);   // RSI站队空头才卖
+           }
+           break;
+        }
+
+      //--- 模块6：双均线方向过滤（可选，默认关闭）
+      //    只有已出现候选信号时才去取均线值，避免全历史逐bar取数（性能）
+      if(InpMaEnabled && (buy || sell))
+        {
+         int maState = g_ma.TrendState(i, rates_total);
+         if(buy  && maState < 0)   // 双均线空头：丢弃做多候选
+            buy = false;
+         if(sell && maState > 0)   // 双均线多头：丢弃做空候选
+            sell = false;
         }
 
       if(buy)  BufBuy[i]  = low[i];
       if(sell) BufSell[i] = high[i];
      }
 
-   //--- 模块3：每次Tick刷新倒计时与价格
-   g_cd.Update(_Symbol, _Period);
-
-   //--- 模块4：节流刷新网格线
-   g_grid.Update(_Symbol, _Period);
+   //--- 外观对象（倒计时文本/位置、网格线样式）改动后需一次重绘才会立即显现
+   //    注：外观层已在函数开头刷新过，这里只负责"把结果画出来"
+   ChartRedraw(0);
 
    return(rates_total);
   }
 //+------------------------------------------------------------------+
-//| Timer 事件：每秒刷新倒计时与网格线                                 |
+//| Timer 事件：每秒刷新外观层（倒计时/网格线）                         |
+//| 注：这是"兜底加速器"而非唯一刷新路径——OnCalculate 每 tick 同样会刷新。 |
+//|     两者都保留，任何一条通路失效时外观仍能跟上行情。                 |
 //+------------------------------------------------------------------+
 void OnTimer()
   {
