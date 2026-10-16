@@ -15,13 +15,13 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.22"
+#property version     "1.28"
 #property description "模块化交易系统骨架：主指标聚合器"
-#property description "主信号：MACD二线交叉(DIF上穿/下穿DEA，与 iMACD / 2linemacd 同口径) + K线着色 + 网格线 + 倒计时"
+#property description "主信号：MACD二线交叉(DIF上穿/下穿DEA，与 iMACD / 2linemacd 同口径) + K线着色 + 网格线 + 倒计时 + 价格折线(高/低/开)"
 #property description "备选：震荡(Stoch)触发 / MACD柱动量耗尽确认 / 双均线过滤(可选，默认关闭)"
 #property indicator_chart_window
-#property indicator_buffers 7
-#property indicator_plots   3
+#property indicator_buffers 10
+#property indicator_plots   6
 
 #property indicator_label1  "Candles"
 #property indicator_type1   DRAW_COLOR_CANDLES
@@ -37,6 +37,22 @@
 #property indicator_color3  clrOrangeRed
 #property indicator_width3  2
 
+//--- 模块7：价格折线（默认类型；OnInit 里会按开关改写为 DRAW_NONE）
+#property indicator_label4  "High Line"
+#property indicator_type4   DRAW_LINE
+#property indicator_color4  clrDodgerBlue
+#property indicator_width4  1
+
+#property indicator_label5  "Low Line"
+#property indicator_type5   DRAW_LINE
+#property indicator_color5  clrOrangeRed
+#property indicator_width5  1
+
+#property indicator_label6  "Open Line"
+#property indicator_type6   DRAW_LINE
+#property indicator_color6  clrGold
+#property indicator_width6  1
+
 #include "Modules\MacdTrend.mqh"
 #include "Modules\OscSignal.mqh"
 #include "Modules\RsiFilter.mqh"
@@ -44,6 +60,7 @@
 #include "Modules\GridLines.mqh"
 #include "Modules\BigCandles.mqh"
 #include "Modules\TrendMA.mqh"    // 模块6：双均线趋势（可选，默认关闭；参数组在设置页最底部）
+#include "Modules\PriceLines.mqh" // 模块7：价格折线（高/低/开，三条折线可独立开关）
 
 //--- 信号组合模式
 enum ENUM_SIGNAL_MODE
@@ -60,6 +77,7 @@ input ENUM_SIGNAL_MODE InpMode       = MODE_MACD;   // 信号组合模式(默认
 input bool             InpOnlyClosed = true;        // 仅收盘bar出信号(防重绘)
 
 input group "══════ 模块1：MACD 二线交叉(主信号，同 iMACD 口径) ══════"
+input bool               InpMacdEnabled  = true;        // 启用 MACD 模块
 input int                InpMacdFast     = 12;          // 快线EMA周期
 input int                InpMacdSlow     = 26;          // 慢线EMA周期
 input int                InpMacdSignal   = 9;           // 信号线DEA周期(SMA平滑，同iMACD)
@@ -75,6 +93,7 @@ input int    InpMacdRSIPeriod = 14;    // RSI周期(仅上面开关开启时生�
 input double InpMacdRSILevel  = 50.0;  // RSI多空分界
 
 input group "══════ 模块2：震荡(Stoch) ══════"
+input bool   InpOscEnabled   = true;  // 启用震荡模块
 input int    InpOscK         = 14;    // %K 周期
 input int    InpOscD         = 3;     // %D 周期
 input int    InpOscSlowing   = 3;     // 平滑
@@ -105,7 +124,7 @@ input int             InpGridIntFontSize = 18;                // 整数位标签
 input bool            InpGridAlertInt    = false;             // 整数位预警
 input bool            InpGridShowQtr     = true;              // 显示四分之一位线条
 input color           InpGridQtrColor    = clrFireBrick;      // 四分之一位颜色
-input ENUM_LINE_STYLE InpGridQtrStyle    = STYLE_DOT;         // 四分之一位线型
+input ENUM_LINE_STYLE InpGridQtrStyle    = STYLE_SOLID;       // 四分之一位线型
 input int             InpGridQtrWidth    = 1;                 // 四分之一位线宽
 input int             InpGridQtrFontSize = 12;                // 四分之一位标签字号
 input bool            InpGridShowMid     = true;              // 显示中位线条
@@ -132,7 +151,7 @@ input color  InpCdlShadowBull  = clrDeepSkyBlue;     // 大下影线K线颜色(�
 input color  InpCdlShadowBear  = clrMagenta;         // 大上影线K线颜色(偏空)
 input color  InpCdlNormalBull  = clrDarkGreen;       // 普通阳线颜色
 input color  InpCdlNormalBear  = clrMaroon;          // 普通阴线颜色
-input bool   InpCdlUseATR      = false;              // 使用ATR自适应实体阈值
+input bool   InpCdlUseATR      = true;               // 使用ATR自适应实体阈值(默认开)
 input double InpCdlATRMult     = 1.5;                // ATR倍数
 input int    InpCdlATRPeriod   = 14;                 // ATR周期
 input int    InpCdlM1Body      = 36;                 // M1最小实体点数
@@ -162,6 +181,21 @@ input int                InpMaSlow    = 60;             // 慢线周期
 input ENUM_MA_METHOD     InpMaMethod  = MODE_EMA;       // 均线算法
 input ENUM_APPLIED_PRICE InpMaPrice   = PRICE_CLOSE;    // 应用价格
 
+input group "══════ 模块7：价格折线(最高/最低/开盘，可独立开关) ══════"
+input bool            InpPLEnabled   = true;         // 启用价格折线模块
+input bool            InpPLShowHigh  = true;         // 绘制最高价折线
+input color           InpPLHighColor = clrDodgerBlue; // 最高价线颜色
+input ENUM_LINE_STYLE InpPLHighStyle = STYLE_SOLID;  // 最高价线型
+input int             InpPLHighWidth = 1;            // 最高价线宽
+input bool            InpPLShowLow   = true;         // 绘制最低价折线
+input color           InpPLLowColor  = clrOrangeRed; // 最低价线颜色
+input ENUM_LINE_STYLE InpPLLowStyle  = STYLE_SOLID;  // 最低价线型
+input int             InpPLLowWidth  = 1;            // 最低价线宽
+input bool            InpPLShowOpen  = false;        // 绘制开盘价折线
+input color           InpPLOpenColor = clrGold;      // 开盘价线颜色
+input ENUM_LINE_STYLE InpPLOpenStyle = STYLE_DOT;    // 开盘价线型
+input int             InpPLOpenWidth = 1;            // 开盘价线宽
+
 //--- 模块实例（全局单例）
 CMacdModule      g_macd;
 COscModule       g_osc;
@@ -170,6 +204,7 @@ CCountdownModule g_cd;
 CGridModule      g_grid;
 CBigCandleModule g_candle;
 CTrendModule     g_ma;      // 模块6：双均线（默认未启用，未启用时不创建句柄）
+CPriceLineModule g_pl;      // 模块7：价格折线（高/低/开）
 
 //--- 指标缓冲区
 double CandleOpen[];      // 模块5：K线着色 O/H/L/C
@@ -179,6 +214,11 @@ double CandleClose[];
 double CandleColor[];     // 模块5：颜色索引(0-5)
 double BufBuy[];          // 信号箭头
 double BufSell[];
+
+//--- 模块7：价格折线缓冲区（plot 3/4/5）
+double PLHigh[];          // 最高价折线
+double PLLow[];           // 最低价折线
+double PLOpen[];          // 开盘价折线
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -193,6 +233,11 @@ int OnInit()
    //--- 信号箭头缓冲区（plot 1/2）
    SetIndexBuffer(5, BufBuy,  INDICATOR_DATA);
    SetIndexBuffer(6, BufSell, INDICATOR_DATA);
+
+   //--- 模块7：价格折线缓冲区（plot 3/4/5）
+   SetIndexBuffer(7, PLHigh, INDICATOR_DATA);
+   SetIndexBuffer(8, PLLow,  INDICATOR_DATA);
+   SetIndexBuffer(9, PLOpen, INDICATOR_DATA);
 
    //--- K线着色 plot 属性：6 个颜色槽由模块参数驱动
    PlotIndexSetInteger(0, PLOT_COLOR_INDEXES, 6);
@@ -211,27 +256,55 @@ int OnInit()
    PlotIndexSetDouble(1, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    PlotIndexSetDouble(2, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   int minBars = MathMax(InpMacdSlow + InpMacdSignal, InpOscK + InpOscD + InpOscSlowing) + 5;
+   //--- 模块7：价格折线 plot 属性（颜色/线宽/线型；关闭的线设为 DRAW_NONE 不绘制）
+   PlotIndexSetInteger(3, PLOT_DRAW_TYPE, (InpPLEnabled && InpPLShowHigh) ? DRAW_LINE : DRAW_NONE);
+   PlotIndexSetInteger(3, PLOT_LINE_COLOR, InpPLHighColor);
+   PlotIndexSetInteger(3, PLOT_LINE_WIDTH, InpPLHighWidth);
+   PlotIndexSetInteger(3, PLOT_LINE_STYLE, InpPLHighStyle);
+   PlotIndexSetDouble (3, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+
+   PlotIndexSetInteger(4, PLOT_DRAW_TYPE, (InpPLEnabled && InpPLShowLow) ? DRAW_LINE : DRAW_NONE);
+   PlotIndexSetInteger(4, PLOT_LINE_COLOR, InpPLLowColor);
+   PlotIndexSetInteger(4, PLOT_LINE_WIDTH, InpPLLowWidth);
+   PlotIndexSetInteger(4, PLOT_LINE_STYLE, InpPLLowStyle);
+   PlotIndexSetDouble (4, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+
+   PlotIndexSetInteger(5, PLOT_DRAW_TYPE, (InpPLEnabled && InpPLShowOpen) ? DRAW_LINE : DRAW_NONE);
+   PlotIndexSetInteger(5, PLOT_LINE_COLOR, InpPLOpenColor);
+   PlotIndexSetInteger(5, PLOT_LINE_WIDTH, InpPLOpenWidth);
+   PlotIndexSetInteger(5, PLOT_LINE_STYLE, InpPLOpenStyle);
+   PlotIndexSetDouble (5, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+
+   //--- 预热bar数：只计入「已启用」的模块所需的最长预热区
+   int minBars = 5;
+   if(InpMacdEnabled)
+      minBars = MathMax(minBars, InpMacdSlow + InpMacdSignal + 5);
+   if(InpOscEnabled)
+      minBars = MathMax(minBars, InpOscK + InpOscD + InpOscSlowing + 5);
    if(InpMaEnabled)
       minBars = MathMax(minBars, InpMaSlow + 5);   // 双均线启用时预留其预热区
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.22");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.28");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
-   MacdSettings mc;
-   mc.FastPeriod     = InpMacdFast;
-   mc.SlowPeriod     = InpMacdSlow;
-   mc.SignalPeriod   = InpMacdSignal;
-   mc.Price          = InpMacdPrice;
-   mc.HistMultiplier = InpMacdHistMult;
-   if(!g_macd.Create(_Symbol, _Period, mc))
-      return(INIT_FAILED);
+   //--- 模块1：MACD（默认启用；关闭时不创建句柄，零开销）
+   if(InpMacdEnabled)
+     {
+      MacdSettings mc;
+      mc.FastPeriod     = InpMacdFast;
+      mc.SlowPeriod     = InpMacdSlow;
+      mc.SignalPeriod   = InpMacdSignal;
+      mc.Price          = InpMacdPrice;
+      mc.HistMultiplier = InpMacdHistMult;
+      if(!g_macd.Create(_Symbol, _Period, mc))
+         return(INIT_FAILED);
+     }
 
-   //--- 模块1b：RSI 过滤器（可选；仅当开关开启时才创建句柄）
-   if(InpMacdUseRSI)
+   //--- 模块1b：RSI 过滤器（可选；依赖 MACD 模块，二者都开启时才创建句柄）
+   if(InpMacdEnabled && InpMacdUseRSI)
      {
       RsiSettings rc;
       rc.Period = InpMacdRSIPeriod;
@@ -240,14 +313,18 @@ int OnInit()
          return(INIT_FAILED);
      }
 
-   OscSettings oc;
-   oc.KPeriod   = InpOscK;
-   oc.DPeriod   = InpOscD;
-   oc.Slowing   = InpOscSlowing;
-   oc.BuyLevel  = InpOscBuyLevel;
-   oc.SellLevel = InpOscSellLevel;
-   if(!g_osc.Create(_Symbol, _Period, oc))
-      return(INIT_FAILED);
+   //--- 模块2：震荡 Stoch（默认启用；关闭时不创建句柄，零开销）
+   if(InpOscEnabled)
+     {
+      OscSettings oc;
+      oc.KPeriod   = InpOscK;
+      oc.DPeriod   = InpOscD;
+      oc.Slowing   = InpOscSlowing;
+      oc.BuyLevel  = InpOscBuyLevel;
+      oc.SellLevel = InpOscSellLevel;
+      if(!g_osc.Create(_Symbol, _Period, oc))
+         return(INIT_FAILED);
+     }
 
    CountdownSettings cc;
    cc.Enabled   = InpCdEnabled;
@@ -340,6 +417,15 @@ int OnInit()
          return(INIT_FAILED);
      }
 
+   //--- 模块7：价格折线（高/低/开；三条线可独立开关）
+   PriceLineSettings pls;
+   pls.Enabled  = InpPLEnabled;
+   pls.ShowHigh = InpPLShowHigh;
+   pls.ShowLow  = InpPLShowLow;
+   pls.ShowOpen = InpPLShowOpen;
+   if(!g_pl.Create(pls))
+      return(INIT_FAILED);
+
    //--- 秒级定时器：为倒计时提供稳定的秒级刷新（网格模块内部自行节流）
    //    注：即使定时器在个别环境下不回调，OnCalculate 每 tick 也会刷新外观层，
    //    只是刷新频率取决于行情节奏（活跃品种通常每秒多次）。
@@ -360,6 +446,7 @@ void OnDeinit(const int reason)
    g_grid.Release();
    g_candle.Release();
    g_ma.Release();          // 模块6：未启用时句柄为 INVALID_HANDLE，释放无害
+   g_pl.Release();          // 模块7：无内部资源，占位调用
    EventKillTimer();
   }
 //+------------------------------------------------------------------+
@@ -374,7 +461,12 @@ int OnCalculate(const int rates_total,
                 const long &volume[],
                 const int &spread[])
   {
-   int minBars = MathMax(InpMacdSlow + InpMacdSignal, InpOscK + InpOscD + InpOscSlowing) + 5;
+   //--- 预热bar数：只计入「已启用」的模块所需的最长预热区
+   int minBars = 5;
+   if(InpMacdEnabled)
+      minBars = MathMax(minBars, InpMacdSlow + InpMacdSignal + 5);
+   if(InpOscEnabled)
+      minBars = MathMax(minBars, InpOscK + InpOscD + InpOscSlowing + 5);
    if(InpMaEnabled)
       minBars = MathMax(minBars, InpMaSlow + 5);
 
@@ -386,11 +478,12 @@ int OnCalculate(const int rates_total,
    g_cd.Update(_Symbol, _Period);       // 模块3：倒计时 + 实时价格
    g_grid.Update(_Symbol, _Period);     // 模块4：网格线（模块内部自行节流）
 
-   //--- ★ 数据层：就绪与否只影响"信号层"，不再中断整个 OnCalculate
+   //--- ★ 数据层：各模块「启用 + 就绪」互相独立，任一缺席只影响依赖它的信号模式
    bool enough = (rates_total >= minBars);
    g_candle.Prepare(rates_total);                                        // 模块5：ATR（可选，未就绪也不影响着色）
-   bool macdOk = enough && g_macd.Calculate(rates_total, prev_calculated); // 模块1：三线 MACD
-   bool rsiOk  = (!InpMacdUseRSI || g_rsi.Prepare(rates_total, prev_calculated)); // 模块1b：RSI
+   bool macdOk = InpMacdEnabled && enough && g_macd.Calculate(rates_total, prev_calculated); // 模块1：三线 MACD
+   bool rsiOk  = (!(InpMacdEnabled && InpMacdUseRSI)) || g_rsi.Prepare(rates_total, prev_calculated); // 模块1b：RSI
+   bool oscOn  = InpOscEnabled;                                          // 模块2：震荡（触发由 Signal() 内部判就绪）
 
    //--- 首次计算：清空信号缓冲区，避免历史区出现乱值
    if(prev_calculated == 0)
@@ -436,13 +529,10 @@ int OnCalculate(const int rates_total,
 
      }
 
-   //--- 5-2 信号层：数据未就绪时仅保留上面的着色结果，本轮不合成信号
-   if(!macdOk || !rsiOk)
-     {
-      ChartRedraw(0);
-      return(rates_total);
-     }
+   //--- 模块7：价格折线（高/低/开）—— 仅依赖价格序列，无条件刷新
+   g_pl.Fill(start, rates_total, open, high, low, PLHigh, PLLow, PLOpen);
 
+   //--- 5-2 信号层：模块就绪与否不再整体短路，改为循环内按「当前模式依赖哪些模块」判定
    //--- 历史不足的bar不出信号（K线着色不受此限制，已在上一步写完）
    for(int i = MathMax(start, minBars); i < rates_total; i++)
      {
@@ -450,35 +540,46 @@ int OnCalculate(const int rates_total,
       if(InpOnlyClosed && i == rates_total - 1)
          continue;
 
-      int trend = g_macd.TrendState(i);                 // 模块1：MACD方向(柱>0 / <0)
-      int cross = g_macd.CrossSignal(i);                // 模块1：MACD金叉(+1)/死叉(-1)
-      int trig  = g_osc.Signal(i, rates_total);         // 模块2：触发
+      //--- 取数前先判各模块可用性：关闭/未就绪的模块取 0，绝不去读空的内部数组
+      int trend = 0, cross = 0, trig = 0;
+      if(macdOk)   // 模块1：MACD方向(柱>0 / <0) + 金叉(+1)/死叉(-1)
+        {
+         trend = g_macd.TrendState(i);
+         cross = g_macd.CrossSignal(i);
+        }
+      if(oscOn)    // 模块2：震荡触发
+         trig = g_osc.Signal(i, rates_total);
 
       //--- 信号合成：改你的交易规则 = 改这里
       bool buy = false, sell = false;
       switch(InpMode)
         {
          case MODE_FILTER:
+            // 依赖 模块2(触发) + 模块1(方向)：任一关闭则 trig/trend 恒为0，自然无信号
             buy  = (trig > 0 && trend > 0);   // 多头趋势中超卖触发 -> 买
             sell = (trig < 0 && trend < 0);   // 空头趋势中超买触发 -> 卖
             break;
          case MODE_ANY:
+            // 仅依赖 模块2(触发)：模块2关闭则无信号
             buy  = (trig > 0);
             sell = (trig < 0);
             break;
          case MODE_MACD:
+            // 仅依赖 模块1：模块1关闭则 cross 恒为0，无信号
             //--- 主信号：2linemacd 两条线的交叉点（DIF 上穿 DEA 买 / 下穿 DEA 卖）
             buy  = (cross > 0);
             sell = (cross < 0);
             break;
          case MODE_MOMENTUM:
            {
+            if(!macdOk)   // 依赖 模块1(柱动量)：关闭或未就绪则不出信号
+               break;
             // 动量耗尽：加速段 -> 减速段 -> 反向穿越，只在柱的峰/谷处认信号
             int mom = g_macd.MomentumCross(i, InpMacdRunLen, InpMacdDecelMin, InpMacdLookback);
             if(mom > 0)
-               buy  = (!InpMacdUseRSI || g_rsi.State(i) > 0);   // RSI站队多头才买
+               buy  = (!InpMacdUseRSI || (rsiOk && g_rsi.State(i) > 0));   // RSI站队多头才买
             else if(mom < 0)
-               sell = (!InpMacdUseRSI || g_rsi.State(i) < 0);   // RSI站队空头才卖
+               sell = (!InpMacdUseRSI || (rsiOk && g_rsi.State(i) < 0));   // RSI站队空头才卖
            }
            break;
         }

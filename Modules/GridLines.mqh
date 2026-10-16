@@ -157,6 +157,41 @@ private:
       return(GRIDLINE_INTEGER);
      }
 
+   //--- 品种名前缀匹配（不区分大小写）：命中 symbol 开头即算，
+   //    之后可跟经纪商任意后缀（如 XAUUSDm / US30.cash / USTEC.pro）
+   bool               MatchPrefix(const string symbol,const string key) const
+     {
+      string s = symbol; StringToUpper(s);
+      string k = key;    StringToUpper(k);
+      return(StringFind(s, k) == 0);
+     }
+
+   //--- 股指族判定（前缀匹配，含常见别名）：容器按展示位数定档（见 Create）
+   bool               IsIndexSymbol(const string symbol) const
+     {
+      if(MatchPrefix(symbol, "US30")   || MatchPrefix(symbol, "DJ30")   ||
+         MatchPrefix(symbol, "WS30")   || MatchPrefix(symbol, "DOW")    ||
+         MatchPrefix(symbol, "USA30"))                                       // 道指
+         return(true);
+      if(MatchPrefix(symbol, "USTEC")  || MatchPrefix(symbol, "USTECH") ||
+         MatchPrefix(symbol, "US100")  || MatchPrefix(symbol, "NAS100") ||
+         MatchPrefix(symbol, "NASDAQ"))                                      // 纳指
+         return(true);
+      if(MatchPrefix(symbol, "US500")  || MatchPrefix(symbol, "USA500") ||
+         MatchPrefix(symbol, "SP500")  || MatchPrefix(symbol, "SPX"))         // 标普
+         return(true);
+      if(MatchPrefix(symbol, "GER30")  || MatchPrefix(symbol, "GER40")  ||
+         MatchPrefix(symbol, "DE30")   || MatchPrefix(symbol, "DE40")   ||
+         MatchPrefix(symbol, "DAX"))                                         // 德指
+         return(true);
+      if(MatchPrefix(symbol, "UK100")  || MatchPrefix(symbol, "FTSE"))        // 富时
+         return(true);
+      if(MatchPrefix(symbol, "JP225")  || MatchPrefix(symbol, "JPN225") ||
+         MatchPrefix(symbol, "NIKKEI"))                                      // 日经
+         return(true);
+      return(false);
+     }
+
    //--- 名称 -> 价格
    double             PriceFromName(const string name,const bool is_label) const
      {
@@ -402,42 +437,58 @@ public:
 
       if(m_cfg.AutoDetect)
         {
-         //--- 1. 优先检测黄金 (XAU / GOLD)
-         if(StringFind(symbol, "XAU") != -1 || StringFind(symbol, "GOLD") != -1)
+         //--- 口径：黄金/白银按「价格步长」识别（与小数位无关，落同一价格台阶）；
+         //    股指按「经纪商展示的价格位数」定档（位数每多一位，容器多一个 0）。
+         //    m_intervalPts = 网格间隔点数，grid_size = m_intervalPts × SYMBOL_POINT。
+         double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+         if(point <= 0.0)
+            point = MathPow(0.1, digits);          // 兜底：由小数位反推 point
+         double stepPrice = 0.0;
+         bool   isIndex   = false;
+
+         //--- 1. 黄金（前缀 XAU / GOLD）：每 10 美元（2位/3位小数通用）
+         if(MatchPrefix(symbol, "XAU") || MatchPrefix(symbol, "GOLD"))
+            stepPrice = 10.0;
+         //--- 2. 白银（前缀 XAG / SILVER）：每 0.5 美元
+         else if(MatchPrefix(symbol, "XAG") || MatchPrefix(symbol, "SILVER"))
+            stepPrice = 0.5;
+         //--- 3. 股指（US30 / USTEC / US500 / GER / UK100 / JP225 等，前缀匹配）
+         else if(IsIndexSymbol(symbol))
+            isIndex = true;
+
+         if(isIndex)
            {
-            if(digits == 3)
-              {
-               m_intervalPts = 100000;   // 3位小数黄金：约10美金
-               Print("检测到3位小数黄金品种 (" + symbol + ")，自动设置网格间隔为 ",
-                     m_intervalPts, " 点 (约10美金)");
-              }
-            else if(digits == 2)
-              {
-               m_intervalPts = 1000;     // 标准黄金
-               Print("检测到标准黄金品种 (" + symbol + ")，自动设置网格间隔为 ",
-                     m_intervalPts, " 点 (约10美金)");
-              }
-            else
-              {
-               m_intervalPts = m_cfg.IntervalPoints;
-               Print("检测到黄金但小数位特殊(", digits, ")，使用默认间隔: ", m_intervalPts);
-              }
+            //--- 股指容器按「经纪商展示的价格位数」定档：
+            //    容器点数 = 10^(展示位数 - 2)          （展示位数 = 整数位位数 + 小数位位数）
+            //    等价于  指数点容器 = 10^(整数位位数 - 2) = 指数价位的 1% 左右，与小数位无关
+            //    例：US30 =53000.0  (5+1=6位) -> 10^4 = 10000  点 = 1000 指数点
+            //        US500=5700.25  (4+2=6位) -> 10^4 = 10000  点 = 100  指数点
+            //        USTEC=30000.00 (5+2=7位) -> 10^5 = 100000 点 = 1000 指数点
+            double refPrice  = SymbolInfoDouble(symbol, SYMBOL_BID);
+            int    intDigits = 1;
+            if(refPrice > 0.0)
+               intDigits = (int)MathFloor(MathLog(refPrice) / MathLog(10.0)) + 1;   // 整数部分位数
+            int    totalDigits = intDigits + digits;                                // 展示位数
+            int    idxPts      = (int)MathRound(MathPow(10.0, (double)(totalDigits - 2)));
+            if(idxPts < 1)
+               idxPts = 1;
+            m_intervalPts = idxPts;
+            Print("自动识别指数品种(", symbol, ", 展示 ", totalDigits, " 位 = ",
+                  intDigits, " 整数位 + ", digits, " 小数位)：网格间隔 ",
+                  m_intervalPts, " 点 = ",
+                  DoubleToString(m_intervalPts * point, digits), " 指数点");
            }
-         //--- 2. 日元 (JPY)
-         else if(StringFind(symbol, "JPY") != -1)
+         else if(stepPrice > 0.0)
            {
-            m_intervalPts = 1000;
-            Print("检测到日元品种，自动设置网格间隔为 ", m_intervalPts);
+            m_intervalPts = (int)MathRound(stepPrice / point);
+            if(m_intervalPts < 1)
+               m_intervalPts = 1;
+            Print("自动识别品种族(", symbol, ", ", digits, "位小数)：网格间隔 ",
+                  stepPrice, " 价格单位 = ", m_intervalPts, " 点");
            }
-         //--- 3. 白银 (XAG)
-         else if(StringFind(symbol, "XAG") != -1)
-           {
-            m_intervalPts = 500;
-            Print("检测到白银品种，自动设置网格间隔为 ", m_intervalPts);
-           }
-         //--- 4. 其他品种
          else
            {
+            //--- 通用外汇/其它：100 pips（5/3 位小数 = 1000 点）；其余 100 点
             m_intervalPts = (digits == 5 || digits == 3) ? 1000 : 100;
             Print("使用默认网格间隔: ", m_intervalPts);
            }
