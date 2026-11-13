@@ -154,8 +154,13 @@ public:
       int copied = CopyBuffer(m_hMacd, 0, 0, need, m_tmpDif);   // buffer0 = DIF
       if(copied <= 0)
          return(false);
-      if(CopyBuffer(m_hMacd, 1, 0, need, m_tmpDea) <= 0)       // buffer1 = DEA(SMA)
+      int copiedDea = CopyBuffer(m_hMacd, 1, 0, need, m_tmpDea); // buffer1 = DEA(SMA)
+      if(copiedDea <= 0)
          return(false);
+      //--- 两条线取自同一步计算，数量应当一致；不一致说明历史在变动，
+      //    取较小值对齐，避免 DIF/DEA 错位（错位会让交叉信号整体偏移一根）
+      if(copiedDea < copied)
+         copied = copiedDea;
 
       int off = rates_total - copied;
       if(off < 0)

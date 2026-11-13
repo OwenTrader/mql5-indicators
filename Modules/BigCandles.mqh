@@ -70,6 +70,7 @@ private:
    CandleSettings   m_cfg;
    int              m_atr;          // ATR句柄
    double           m_atrBuf[];     // ATR数据（旧->新，与OnCalculate数组同向）
+   double           m_atrTmp[];     // 拷贝中转（非指标缓冲区禁止直接部分拷贝）
    double           m_point;        // 品种点值
    int              m_minBodyPts;   // 当前周期实体阈值(点)
    int              m_minShadowPts; // 当前周期影线阈值(点)
@@ -152,18 +153,41 @@ public:
         }
      }
 
-   //--- 每轮计算前调用：拷贝ATR数据（返回false=数据未就绪，等待下轮）
-   bool               Prepare(const int rates_total)
+   //--- 每轮计算前调用：增量拷贝ATR数据（返回false=数据未就绪，调用方等下一轮）
+   //    ★ 旧实现每 tick 全量 CopyBuffer(…, rates_total, …)，10万根bar 每 tick
+   //      拷 800KB；且非指标缓冲区做部分拷贝会压数组，故改经中转数组 + 偏移回填。
+   bool               Prepare(const int rates_total,const int prev_calculated)
      {
       if(!m_cfg.Enabled || !m_cfg.UseATRForBody || m_atr == INVALID_HANDLE)
          return(true);
 
-      if(ArraySize(m_atrBuf) < rates_total)
+      int prev = prev_calculated;
+      if(ArraySize(m_atrBuf) != rates_total)
+        {
          ArrayResize(m_atrBuf, rates_total);
+         prev = 0;                       // 尺寸变化 => 内容失效，整体重取
+        }
 
-      //--- 索引0为最老数据，方向与 OnCalculate 的 open/close 一致
-      if(CopyBuffer(m_atr, 0, 0, rates_total, m_atrBuf) <= 0)
+      int need;
+      if(prev <= 0 || prev > rates_total)
+         need = rates_total;
+      else
+        {
+         need = rates_total - prev + 1;
+         if(need < 1)
+            need = 1;
+        }
+
+      ArrayFree(m_atrTmp);
+      int copied = CopyBuffer(m_atr, 0, 0, need, m_atrTmp);
+      if(copied <= 0)
          return(false);
+
+      int off = rates_total - copied;
+      if(off < 0)
+         return(false);
+      for(int k = 0; k < copied; k++)
+         m_atrBuf[off + k] = m_atrTmp[k];
 
       return(true);
      }
@@ -227,8 +251,13 @@ public:
             result = is_bull ? CANDLE_BULL_SHADOW : CANDLE_BEAR_SHADOW;
         }
 
-      //--- 3. 预警（仅对最新完成的K线触发一次）
-      if(m_cfg.EnableAlerts && i == rates_total - 2 && i > prev_calculated - 1)
+      //--- 3. 预警（仅对「本轮刚收盘」的那根K线触发一次）
+      //    条件说明：新bar到达时 rates_total-2 即刚收盘bar（= 旧的 rates_total-1），
+      //    且它落在本轮计算区间内（i >= prev_calculated-1）。
+      //    旧条件写成 i > prev_calculated-1，与新bar下标恰好相等 => 恒假，
+      //    结果「加载时误报一次、之后新K线永不报警」。
+      if(m_cfg.EnableAlerts && prev_calculated > 0 &&
+         i == rates_total - 2 && i >= prev_calculated - 1)
         {
          if((m_cfg.AlertOnBigBody && is_big_body) ||
             (m_cfg.AlertOnBigShadow && (result == CANDLE_BULL_SHADOW || result == CANDLE_BEAR_SHADOW)))

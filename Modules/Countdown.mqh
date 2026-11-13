@@ -33,9 +33,13 @@ private:
    CountdownSettings  m_cfg;
    string             m_label;
    bool               m_created;
+   string             m_lastText;   // 上一轮文本（变更检测，避免无谓重绘）
+   int                m_lastX;
+   int                m_lastY;
 
 public:
-                     CCountdownModule(void) : m_label("MySystem_Countdown"), m_created(false) {}
+                     CCountdownModule(void) : m_label(""), m_created(false),
+                                              m_lastText(""), m_lastX(-1), m_lastY(-1) {}
                     ~CCountdownModule(void) { Release(); }
 
    //--- 初始化：创建标签对象（未启用则直接返回 true）
@@ -44,6 +48,9 @@ public:
       m_cfg = cfg;
       if(!m_cfg.Enabled)
          return(true);
+
+      //--- 对象名带图表ID：模板复制到其他图表时不与旧对象冲突
+      m_label = "MySystem_Countdown_" + IntegerToString((int)ChartID());
 
       if(!ObjectCreate(0, m_label, OBJ_LABEL, 0, 0, 0))
         {
@@ -75,15 +82,18 @@ public:
      }
 
    //--- 核心：刷新倒计时与价格文本（由主指标 OnCalculate/OnTimer 调用）
-   void               Update(const string symbol,const ENUM_TIMEFRAMES tf)
+   //    返回 true = 文本或位置发生变化，调用方据此决定是否 ChartRedraw
+   //    ★ 时间源：用 TimeTradeServer() 而非 TimeCurrent()——后者在无 tick 时
+   //      冻结（夜间/周末倒计时定格不动），前者由本地时钟换算服务器时间。
+   bool               Update(const string symbol,const ENUM_TIMEFRAMES tf)
      {
       if(!m_created)
-         return;
+         return(false);
 
-      datetime currentTime = TimeCurrent();
+      datetime currentTime = TimeTradeServer();
       datetime lastBarTime = iTime(symbol, tf, 0);
       if(lastBarTime == 0)
-         return;                                   // 数据未准备好
+         return(false);                                   // 数据未准备好
 
       int periodSecs  = PeriodSeconds(tf);
       datetime barEnd = lastBarTime + periodSecs;
@@ -115,6 +125,14 @@ public:
          displayText = timeStr + m_cfg.Separator + priceStr;
         }
 
+      bool changed = false;
+      if(displayText != m_lastText)
+        {
+         ObjectSetString(0, m_label, OBJPROP_TEXT, displayText);
+         m_lastText = displayText;
+         changed    = true;
+        }
+
       //--- 锚定到最新K线高点附近
       long chartID = 0;
       int  subWindow = 0;
@@ -124,11 +142,19 @@ public:
       int x, y;
       if(ChartTimePriceToXY(chartID, subWindow, t1, p1, x, y))
         {
-         ObjectSetInteger(0, m_label, OBJPROP_XDISTANCE, x + m_cfg.XOffset);
-         ObjectSetInteger(0, m_label, OBJPROP_YDISTANCE, y - m_cfg.YOffset);
+         int nx = x + m_cfg.XOffset;
+         int ny = y - m_cfg.YOffset;
+         if(nx != m_lastX || ny != m_lastY)
+           {
+            ObjectSetInteger(0, m_label, OBJPROP_XDISTANCE, nx);
+            ObjectSetInteger(0, m_label, OBJPROP_YDISTANCE, ny);
+            m_lastX  = nx;
+            m_lastY  = ny;
+            changed  = true;
+           }
         }
 
-      ObjectSetString(0, m_label, OBJPROP_TEXT, displayText);
+      return(changed);
      }
   };
 

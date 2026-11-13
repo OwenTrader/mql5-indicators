@@ -3,6 +3,13 @@
 //|  模块4：网格线模块（整数位/四分位/中位/八分位水平线 + 价格标签）    |
 //|  由 line.mq5 (GridLines_Opt) 提炼而来，接入主指标 MySystem          |
 //|                                                                  |
+//|  自动间隔（v1.33）：按「价格展示位数」定档                          |
+//|    展示位数 = 整数位位数 + 小数位位数                               |
+//|    通用：间隔点数 = 10^(展示位数 - 3)  ->  6位=1000点 / 7位=10000点 |
+//|    黄金(含XAU/GOLD) 与 股指(US30/USTEC/US500/GER/UK100/JP225…)：     |
+//|           10^(展示位数 - 2) -> 6位=10000点 / 7位=100000点（宽10倍） |
+//|    该间隔再被八分位线等分成 8 份（每份 = 间隔/8）                    |
+//|                                                                  |
 //|  设计约定（同 TrendMA / OscSignal / Countdown）：                  |
 //|  · 模块内不定义 input，参数由主指标通过 struct 传入                |
 //|  · 模块自管图形对象的创建与删除（前缀 MSGL_，区别于独立版 MGL_）    |
@@ -157,41 +164,6 @@ private:
       return(GRIDLINE_INTEGER);
      }
 
-   //--- 品种名前缀匹配（不区分大小写）：命中 symbol 开头即算，
-   //    之后可跟经纪商任意后缀（如 XAUUSDm / US30.cash / USTEC.pro）
-   bool               MatchPrefix(const string symbol,const string key) const
-     {
-      string s = symbol; StringToUpper(s);
-      string k = key;    StringToUpper(k);
-      return(StringFind(s, k) == 0);
-     }
-
-   //--- 股指族判定（前缀匹配，含常见别名）：容器按展示位数定档（见 Create）
-   bool               IsIndexSymbol(const string symbol) const
-     {
-      if(MatchPrefix(symbol, "US30")   || MatchPrefix(symbol, "DJ30")   ||
-         MatchPrefix(symbol, "WS30")   || MatchPrefix(symbol, "DOW")    ||
-         MatchPrefix(symbol, "USA30"))                                       // 道指
-         return(true);
-      if(MatchPrefix(symbol, "USTEC")  || MatchPrefix(symbol, "USTECH") ||
-         MatchPrefix(symbol, "US100")  || MatchPrefix(symbol, "NAS100") ||
-         MatchPrefix(symbol, "NASDAQ"))                                      // 纳指
-         return(true);
-      if(MatchPrefix(symbol, "US500")  || MatchPrefix(symbol, "USA500") ||
-         MatchPrefix(symbol, "SP500")  || MatchPrefix(symbol, "SPX"))         // 标普
-         return(true);
-      if(MatchPrefix(symbol, "GER30")  || MatchPrefix(symbol, "GER40")  ||
-         MatchPrefix(symbol, "DE30")   || MatchPrefix(symbol, "DE40")   ||
-         MatchPrefix(symbol, "DAX"))                                         // 德指
-         return(true);
-      if(MatchPrefix(symbol, "UK100")  || MatchPrefix(symbol, "FTSE"))        // 富时
-         return(true);
-      if(MatchPrefix(symbol, "JP225")  || MatchPrefix(symbol, "JPN225") ||
-         MatchPrefix(symbol, "NIKKEI"))                                      // 日经
-         return(true);
-      return(false);
-     }
-
    //--- 名称 -> 价格
    double             PriceFromName(const string name,const bool is_label) const
      {
@@ -256,32 +228,47 @@ private:
      }
 
    //--- 刷新已存在对象：标签跟随最新K线移动；配置变更后重套样式
-   void               UpdateObjectProperties(const string symbol,const ENUM_TIMEFRAMES tf,const string name)
+   //    返回 true = 确实发生了变化（调用方据此决定是否重绘）
+   bool               UpdateObjectProperties(const string symbol,const ENUM_TIMEFRAMES tf,const string name)
      {
+      bool changed = false;
+
       if(StringFind(name, "LABEL_") > 0)
         {
          double   price      = ObjectGetDouble(0, name, OBJPROP_PRICE);
          datetime label_time = GetLabelTime(symbol, tf);
-         ObjectMove(0, name, 0, label_time, price);
+         datetime cur_time   = (datetime)ObjectGetInteger(0, name, OBJPROP_TIME, 0);
+         if(cur_time != label_time)
+           {
+            ObjectMove(0, name, 0, label_time, price);
+            changed = true;
+           }
         }
 
       //--- 仅当本次会话的参数相比对象建立时发生过变化，才重写样式
       if(m_styleDirty)
+        {
          ApplyProperties(symbol, name);
+         changed = true;
+        }
+      return(changed);
      }
 
    //--- 创建新对象（创建后立即套用当前样式）
-   void               CreateObject(const string symbol,const ENUM_TIMEFRAMES tf,const string name)
+   bool               CreateObject(const string symbol,const ENUM_TIMEFRAMES tf,const string name)
      {
       bool   is_label = (StringFind(name, "LABEL_") > 0);
       double price    = PriceFromName(name, is_label);
 
+      bool ok;
       if(is_label)
-         ObjectCreate(0, name, OBJ_TEXT, 0, GetLabelTime(symbol, tf), price);
+         ok = ObjectCreate(0, name, OBJ_TEXT, 0, GetLabelTime(symbol, tf), price);
       else
-         ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
+         ok = ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
 
-      ApplyProperties(symbol, name);
+      if(ok)
+         ApplyProperties(symbol, name);
+      return(ok);
      }
 
    //--- 预警检查（含30分钟冷却）
@@ -329,19 +316,31 @@ private:
      }
 
    //--- 核心同步逻辑：Diff Sync 算法（更新/删除/新增）
-   void               SyncGrid(const string symbol,const ENUM_TIMEFRAMES tf)
+   //    返回 true = 对象集合或标签位置发生变化
+   bool               SyncGrid(const string symbol,const ENUM_TIMEFRAMES tf)
      {
       m_lastUpdate = TimeCurrent();
+
+      //--- 自动档位可能因 OnInit 时报价未就绪而算错/为 0：此处兜底重算
+      if(m_intervalPts <= 0)
+         DetectInterval(symbol);
 
       int    digits     = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
       double point      = SymbolInfoDouble(symbol, SYMBOL_POINT);
       double base_price = SymbolInfoDouble(symbol, SYMBOL_BID);
       double grid_size  = m_intervalPts * point;
+
+      if(point <= 0.0 || grid_size <= 0.0 || base_price <= 0.0)
+         return(false);                    // 报价未就绪：本轮跳过，等下一个周期
+
       double base_level = MathFloor(base_price / grid_size) * grid_size;
+      bool   changed    = false;
 
       //--- 1. 生成所需对象名称列表
+      //    每档最多 8 条线（INT 1 + QTR 2 + MID 1 + EIG 4）+ 8 个标签，
+      //    预留 *16 可避免同步过程中反复 ArrayResize
       string required_names[];
-      int est_count = (m_cfg.NumLines * 2 + 2) * 8;
+      int est_count = (m_cfg.NumLines * 2 + 2) * 16 + 16;
       ArrayResize(required_names, est_count);
       int req_count = 0;
 
@@ -394,16 +393,19 @@ private:
            }
 
          if(is_needed)
-            UpdateObjectProperties(symbol, tf, name);
+            changed = UpdateObjectProperties(symbol, tf, name) || changed;
          else
+           {
             ObjectDelete(0, name);
+            changed = true;
+           }
         }
 
       //--- 3. 创建缺失的对象（需求列表中未清空的）
       for(int k = 0; k < req_count; k++)
         {
          if(required_names[k] != "")
-            CreateObject(symbol, tf, required_names[k]);
+            changed = CreateObject(symbol, tf, required_names[k]) || changed;
         }
 
       //--- 4. 预警检查
@@ -411,6 +413,90 @@ private:
 
       //--- 5. 本轮已覆盖全部在列对象（含新创建），样式与配置一致
       m_styleDirty = false;
+
+      return(changed);
+     }
+
+   //--- 黄金族判定：品种名【包含】XAU（任意位置、不区分大小写）
+   //    GOLD 作为等价别名一并纳入（同一价格台阶，避免别名品种掉回通用档变密 10 倍）
+   bool               IsGoldSymbol(const string symbol)
+     {
+      string s = symbol;
+      StringToUpper(s);
+      return(StringFind(s, "XAU") >= 0 || StringFind(s, "GOLD") >= 0);
+     }
+
+   //--- 股指族判定：品种名【包含】任一常见别名（含经纪商后缀，如 US30.cash / GER40.pro）
+   bool               IsIndexSymbol(const string symbol)
+     {
+      string s = symbol;
+      StringToUpper(s);
+
+      string keys[] =
+        {
+         //--- 道指
+         "US30", "DJ30", "WS30", "DOW", "USA30",
+         //--- 纳指
+         "USTEC", "USTECH", "US100", "NAS100", "NASDAQ",
+         //--- 标普
+         "US500", "USA500", "SP500", "SPX",
+         //--- 德指
+         "GER30", "GER40", "DE30", "DE40", "DAX",
+         //--- 富时
+         "UK100", "FTSE",
+         //--- 日经
+         "JP225", "JPN225", "NIKKEI"
+        };
+
+      int n = ArraySize(keys);
+      for(int i = 0; i < n; i++)
+         if(StringFind(s, keys[i]) >= 0)
+            return(true);
+      return(false);
+     }
+
+   //--- 自动档位：按「价格展示位数」定档
+   //    展示位数 = 整数部分位数 + 小数位位数（1.12345 = 6 位；4999.00 = 6 位；4000.000 = 7 位）
+   //    通用：间隔点数 = 10^(展示位数 - 3)   ->  5位=100 / 6位=1000 / 7位=10000
+   //    黄金（含 XAU/GOLD）与股指（US30/USTEC/US500/GER/UK100/JP225 等）：指数 +1
+   //          -> 6位=10000 / 7位=100000（比通用档宽 10 倍）
+   //    该间隔再被「八分位」线等分成 8 份（1/8、2/8…7/8 各有线型），即每份 = 间隔/8。
+   void               DetectInterval(const string symbol)
+     {
+      int    digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+      double point  = SymbolInfoDouble(symbol, SYMBOL_POINT);
+      if(point <= 0.0)
+         point = MathPow(0.1, (double)digits);     // 兜底：由小数位反推 point
+
+      double refPrice = SymbolInfoDouble(symbol, SYMBOL_BID);
+      if(point <= 0.0 || refPrice <= 0.0)
+        {
+         m_intervalPts = 0;                        // 报价未就绪：留给 SyncGrid 下次重算
+         return;
+        }
+
+      int intDigits = (int)MathFloor(MathLog(refPrice) / MathLog(10.0)) + 1;   // 整数部分位数
+      if(intDigits < 1)
+         intDigits = 1;
+      int totalDigits = intDigits + digits;                                    // 展示位数
+
+      bool isGold  = IsGoldSymbol(symbol);
+      bool isIndex = (!isGold) && IsIndexSymbol(symbol);
+      int  expo    = totalDigits - 3 + ((isGold || isIndex) ? 1 : 0);          // 金银/股指档位宽 10 倍
+
+      double pts = MathPow(10.0, (double)expo);
+      if(pts < 1.0)
+         pts = 1.0;
+      if(pts > 1e9)
+         pts = 1e9;
+      m_intervalPts = (int)MathRound(pts);
+
+      double gridPrice = m_intervalPts * point;
+      string tag = isGold ? " [黄金档]" : (isIndex ? " [股指档]" : " [通用档]");
+      Print("网格自动定档(", symbol, ")：价格 ", DoubleToString(refPrice, digits),
+            " = ", totalDigits, " 位(", intDigits, " 整数 + ", digits, " 小数)", tag,
+            " -> 间隔 ", m_intervalPts, " 点 = ", DoubleToString(gridPrice, digits),
+            "，八等分每份 ", DoubleToString(gridPrice / 8.0, digits + 1));
      }
 
 public:
@@ -424,6 +510,10 @@ public:
      {
       m_cfg = cfg;
       m_styleDirty = true;              // 参数可能已变更：首次同步时对已有对象重套样式
+
+      //--- 对象名前缀带图表ID：模板/同一模板复制到多图表时不互相覆盖
+      m_prefix = "MSGL_" + IntegerToString((int)ChartID()) + "_";
+
       if(!m_cfg.Enabled)
          return(true);
 
@@ -433,66 +523,8 @@ public:
       m_stateMid.last_price = 0;
       m_lastUpdate          = 0;
 
-      int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-
       if(m_cfg.AutoDetect)
-        {
-         //--- 口径：黄金/白银按「价格步长」识别（与小数位无关，落同一价格台阶）；
-         //    股指按「经纪商展示的价格位数」定档（位数每多一位，容器多一个 0）。
-         //    m_intervalPts = 网格间隔点数，grid_size = m_intervalPts × SYMBOL_POINT。
-         double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-         if(point <= 0.0)
-            point = MathPow(0.1, digits);          // 兜底：由小数位反推 point
-         double stepPrice = 0.0;
-         bool   isIndex   = false;
-
-         //--- 1. 黄金（前缀 XAU / GOLD）：每 10 美元（2位/3位小数通用）
-         if(MatchPrefix(symbol, "XAU") || MatchPrefix(symbol, "GOLD"))
-            stepPrice = 10.0;
-         //--- 2. 白银（前缀 XAG / SILVER）：每 0.5 美元
-         else if(MatchPrefix(symbol, "XAG") || MatchPrefix(symbol, "SILVER"))
-            stepPrice = 0.5;
-         //--- 3. 股指（US30 / USTEC / US500 / GER / UK100 / JP225 等，前缀匹配）
-         else if(IsIndexSymbol(symbol))
-            isIndex = true;
-
-         if(isIndex)
-           {
-            //--- 股指容器按「经纪商展示的价格位数」定档：
-            //    容器点数 = 10^(展示位数 - 2)          （展示位数 = 整数位位数 + 小数位位数）
-            //    等价于  指数点容器 = 10^(整数位位数 - 2) = 指数价位的 1% 左右，与小数位无关
-            //    例：US30 =53000.0  (5+1=6位) -> 10^4 = 10000  点 = 1000 指数点
-            //        US500=5700.25  (4+2=6位) -> 10^4 = 10000  点 = 100  指数点
-            //        USTEC=30000.00 (5+2=7位) -> 10^5 = 100000 点 = 1000 指数点
-            double refPrice  = SymbolInfoDouble(symbol, SYMBOL_BID);
-            int    intDigits = 1;
-            if(refPrice > 0.0)
-               intDigits = (int)MathFloor(MathLog(refPrice) / MathLog(10.0)) + 1;   // 整数部分位数
-            int    totalDigits = intDigits + digits;                                // 展示位数
-            int    idxPts      = (int)MathRound(MathPow(10.0, (double)(totalDigits - 2)));
-            if(idxPts < 1)
-               idxPts = 1;
-            m_intervalPts = idxPts;
-            Print("自动识别指数品种(", symbol, ", 展示 ", totalDigits, " 位 = ",
-                  intDigits, " 整数位 + ", digits, " 小数位)：网格间隔 ",
-                  m_intervalPts, " 点 = ",
-                  DoubleToString(m_intervalPts * point, digits), " 指数点");
-           }
-         else if(stepPrice > 0.0)
-           {
-            m_intervalPts = (int)MathRound(stepPrice / point);
-            if(m_intervalPts < 1)
-               m_intervalPts = 1;
-            Print("自动识别品种族(", symbol, ", ", digits, "位小数)：网格间隔 ",
-                  stepPrice, " 价格单位 = ", m_intervalPts, " 点");
-           }
-         else
-           {
-            //--- 通用外汇/其它：100 pips（5/3 位小数 = 1000 点）；其余 100 点
-            m_intervalPts = (digits == 5 || digits == 3) ? 1000 : 100;
-            Print("使用默认网格间隔: ", m_intervalPts);
-           }
-        }
+         DetectInterval(symbol);
       else
         {
          m_intervalPts = m_cfg.IntervalPoints;
@@ -507,18 +539,21 @@ public:
    //    残留线条，而这些残留对象不会再走样式刷新路径
    void               Release(void)
      {
-      ObjectsDeleteAll(0, m_prefix);
+      //--- 前缀为空时 ObjectsDeleteAll(0,"") 会删光整张图表的对象，必须拦住
+      if(StringLen(m_prefix) > 1)
+         ObjectsDeleteAll(0, m_prefix);
      }
 
    //--- 刷新：内部节流，距上次同步不足间隔秒数则跳过
    //    由主指标 OnCalculate / OnTimer 调用（定时器周期为1秒）
-   void               Update(const string symbol,const ENUM_TIMEFRAMES tf)
+   //    返回 true = 本轮确实改动了对象（调用方据此决定是否重绘）
+   bool               Update(const string symbol,const ENUM_TIMEFRAMES tf)
      {
       if(!m_cfg.Enabled)
-         return;
+         return(false);
       if(TimeCurrent() - m_lastUpdate < m_cfg.UpdateSeconds)
-         return;
-      SyncGrid(symbol, tf);
+         return(false);
+      return(SyncGrid(symbol, tf));
      }
   };
 

@@ -15,13 +15,13 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.28"
+#property version     "1.33"
 #property description "模块化交易系统骨架：主指标聚合器"
-#property description "主信号：MACD二线交叉(DIF上穿/下穿DEA，与 iMACD / 2linemacd 同口径) + K线着色 + 网格线 + 倒计时 + 价格折线(高/低/开)"
-#property description "备选：震荡(Stoch)触发 / MACD柱动量耗尽确认 / 双均线过滤(可选，默认关闭)"
+#property description "主信号：MACD二线交叉(DIF上穿/下穿DEA，与 iMACD / 2linemacd 同口径) + 形态识别 + 网格线 + 倒计时 + 价格折线(高/低/开)"
+#property description "备选：震荡(Stoch)触发 / MACD柱动量耗尽确认 / 双均线过滤 / K线着色(均默认关闭)"
 #property indicator_chart_window
-#property indicator_buffers 10
-#property indicator_plots   6
+#property indicator_buffers 15
+#property indicator_plots   7
 
 #property indicator_label1  "Candles"
 #property indicator_type1   DRAW_COLOR_CANDLES
@@ -53,6 +53,11 @@
 #property indicator_color6  clrGold
 #property indicator_width6  1
 
+//--- 模块8：形态识别（默认类型；关闭时 OnInit 里会改写为 DRAW_NONE）
+#property indicator_label7  "Pattern"
+#property indicator_type7   DRAW_COLOR_CANDLES
+#property indicator_color7  clrLime,clrRed
+
 #include "Modules\MacdTrend.mqh"
 #include "Modules\OscSignal.mqh"
 #include "Modules\RsiFilter.mqh"
@@ -61,6 +66,7 @@
 #include "Modules\BigCandles.mqh"
 #include "Modules\TrendMA.mqh"    // 模块6：双均线趋势（可选，默认关闭；参数组在设置页最底部）
 #include "Modules\PriceLines.mqh" // 模块7：价格折线（高/低/开，三条折线可独立开关）
+#include "Modules\PatternSig.mqh" // 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）
 
 //--- 信号组合模式
 enum ENUM_SIGNAL_MODE
@@ -142,8 +148,8 @@ input bool            InpGridShowLabels  = true;              // 显示价格标
 input color           InpGridLabelColor  = clrWhite;          // 标签颜色
 input string          InpGridLabelFont   = "Consolas";        // 标签字体
 
-input group "══════ 模块5：K线着色 ══════"
-input bool   InpCandleEnabled  = true;               // 启用K线着色
+input group "══════ 模块5：K线着色（默认关闭） ══════"
+input bool   InpCandleEnabled  = false;              // 启用K线着色
 input bool   InpCdlHideNormal  = true;               // 不绘制普通K线(仅高亮特殊K线)
 input color  InpCdlBullBody    = clrLime;            // 大实体阳线颜色
 input color  InpCdlBearBody    = clrRed;             // 大实体阴线颜色
@@ -196,6 +202,17 @@ input color           InpPLOpenColor = clrGold;      // 开盘价线颜色
 input ENUM_LINE_STYLE InpPLOpenStyle = STYLE_DOT;    // 开盘价线型
 input int             InpPLOpenWidth = 1;            // 开盘价线宽
 
+input group "══════ 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌） ══════"
+input bool   InpPatEnabled   = true;            // 启用形态识别
+input int    InpPatX         = 2;               // 第一段连续根数 x (>=2)
+input int    InpPatY         = 2;               // 第二段反向根数 y (上限，1..y 均命中)
+input int    InpPatZ         = 2;               // 第三段连续根数 z (>=2)
+input int    InpPatMinBody   = 22;              // 小实体忽略阈值(点，小于此值不计数)
+input bool   InpPatAllowLonger = false;         // 允许 x/z 段长于设定根数(整段着色)
+input bool   InpPatOnlyClosed  = true;          // 仅收盘bar确认(防重绘)
+input color  InpPatBullColor = clrLime;         // 上涨形态颜色(涨-跌-涨，默认绿)
+input color  InpPatBearColor = clrRed;          // 下跌形态颜色(跌-涨-跌，默认红)
+
 //--- 模块实例（全局单例）
 CMacdModule      g_macd;
 COscModule       g_osc;
@@ -205,6 +222,7 @@ CGridModule      g_grid;
 CBigCandleModule g_candle;
 CTrendModule     g_ma;      // 模块6：双均线（默认未启用，未启用时不创建句柄）
 CPriceLineModule g_pl;      // 模块7：价格折线（高/低/开）
+CPatternModule   g_pat;     // 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）
 
 //--- 指标缓冲区
 double CandleOpen[];      // 模块5：K线着色 O/H/L/C
@@ -220,9 +238,47 @@ double PLHigh[];          // 最高价折线
 double PLLow[];           // 最低价折线
 double PLOpen[];          // 开盘价折线
 
+//--- 模块8：形态识别缓冲区（plot 6）
+double PatOpen[];
+double PatHigh[];
+double PatLow[];
+double PatClose[];
+double PatColor[];        // 0=上涨形态 / 1=下跌形态
+
+//--- 数据完整性状态位
+//    true = 上一次计算时任一数据依赖（MACD/Stoch/RSI/ATR）未就绪，历史区被跳过；
+//    下一轮必须从 0 开始全量重算，否则「未就绪期间跳过的历史」会被永久漏算
+//    （旧实现只依赖 prev_calculated，正是历史信号/着色丢失的根因）
+bool g_needFull = true;
+
+//+------------------------------------------------------------------+
+//| 预热bar数：只计入「已启用」的模块所需的最长预热区                   |
+//| 单一口径，OnInit 与 OnCalculate 共用（避免两处参数漂移）            |
+//+------------------------------------------------------------------+
+int WarmupBars(void)
+  {
+   int bars = 5;
+   if(InpMacdEnabled)
+      bars = MathMax(bars, InpMacdSlow + InpMacdSignal + 5);
+   if(InpMacdEnabled && InpMacdUseRSI)
+      bars = MathMax(bars, InpMacdRSIPeriod + 5);
+   if(InpMacdEnabled && InpMode == MODE_MOMENTUM)
+      bars = MathMax(bars, InpMacdLookback + InpMacdRunLen + InpMacdDecelMin + 5);
+   if(InpOscEnabled)
+      bars = MathMax(bars, InpOscK + InpOscD + InpOscSlowing + 5);
+   if(InpMaEnabled)
+      bars = MathMax(bars, InpMaSlow + 5);
+   if(InpCandleEnabled && InpCdlUseATR)
+      bars = MathMax(bars, InpCdlATRPeriod + 2);
+   return(bars);
+  }
+
 //+------------------------------------------------------------------+
 int OnInit()
   {
+   //--- 重初始化（切周期/改参数）后必须从 0 全量重算
+   g_needFull = true;
+
    //--- 模块5：K线着色缓冲区（plot 0 = DRAW_COLOR_CANDLES）
    SetIndexBuffer(0, CandleOpen,  INDICATOR_DATA);
    SetIndexBuffer(1, CandleHigh,  INDICATOR_DATA);
@@ -238,6 +294,13 @@ int OnInit()
    SetIndexBuffer(7, PLHigh, INDICATOR_DATA);
    SetIndexBuffer(8, PLLow,  INDICATOR_DATA);
    SetIndexBuffer(9, PLOpen, INDICATOR_DATA);
+
+   //--- 模块8：形态识别缓冲区（plot 6 = DRAW_COLOR_CANDLES）
+   SetIndexBuffer(10, PatOpen,  INDICATOR_DATA);
+   SetIndexBuffer(11, PatHigh,  INDICATOR_DATA);
+   SetIndexBuffer(12, PatLow,   INDICATOR_DATA);
+   SetIndexBuffer(13, PatClose, INDICATOR_DATA);
+   SetIndexBuffer(14, PatColor, INDICATOR_COLOR_INDEX);
 
    //--- K线着色 plot 属性：6 个颜色槽由模块参数驱动
    PlotIndexSetInteger(0, PLOT_COLOR_INDEXES, 6);
@@ -275,18 +338,19 @@ int OnInit()
    PlotIndexSetInteger(5, PLOT_LINE_STYLE, InpPLOpenStyle);
    PlotIndexSetDouble (5, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   //--- 预热bar数：只计入「已启用」的模块所需的最长预热区
-   int minBars = 5;
-   if(InpMacdEnabled)
-      minBars = MathMax(minBars, InpMacdSlow + InpMacdSignal + 5);
-   if(InpOscEnabled)
-      minBars = MathMax(minBars, InpOscK + InpOscD + InpOscSlowing + 5);
-   if(InpMaEnabled)
-      minBars = MathMax(minBars, InpMaSlow + 5);   // 双均线启用时预留其预热区
+   //--- 模块8：形态识别 plot 属性（2 个颜色槽：0=上涨形态 / 1=下跌形态）
+   PlotIndexSetInteger(6, PLOT_DRAW_TYPE, InpPatEnabled ? DRAW_COLOR_CANDLES : DRAW_NONE);
+   PlotIndexSetInteger(6, PLOT_COLOR_INDEXES, 2);
+   PlotIndexSetInteger(6, PLOT_LINE_COLOR, 0, InpPatBullColor);
+   PlotIndexSetInteger(6, PLOT_LINE_COLOR, 1, InpPatBearColor);
+   PlotIndexSetDouble (6, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+
+   //--- 预热bar数：只计入「已启用」的模块所需的最长预热区（与 OnCalculate 同一函数）
+   int minBars = WarmupBars();
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.28");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.33");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -426,10 +490,23 @@ int OnInit()
    if(!g_pl.Create(pls))
       return(INIT_FAILED);
 
+   //--- 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）
+   PatternSettings ptc;
+   ptc.Enabled       = InpPatEnabled;
+   ptc.X             = InpPatX;
+   ptc.Y             = InpPatY;
+   ptc.Z             = InpPatZ;
+   ptc.MinBodyPoints = (double)InpPatMinBody;
+   ptc.AllowLonger   = InpPatAllowLonger;
+   if(!g_pat.Create(_Symbol, _Period, ptc))
+      return(INIT_FAILED);
+
    //--- 秒级定时器：为倒计时提供稳定的秒级刷新（网格模块内部自行节流）
    //    注：即使定时器在个别环境下不回调，OnCalculate 每 tick 也会刷新外观层，
-   //    只是刷新频率取决于行情节奏（活跃品种通常每秒多次）。
-   EventSetTimer(1);
+   //        只是刷新频率取决于行情节奏（活跃品种通常每秒多次）。
+   if(!EventSetTimer(1))
+      Print("OnInit: EventSetTimer 失败, err=", GetLastError(),
+            " —— 倒计时将退化为仅随 tick 刷新");
 
    //--- 首次绘制网格线
    g_grid.Update(_Symbol, _Period);
@@ -447,6 +524,7 @@ void OnDeinit(const int reason)
    g_candle.Release();
    g_ma.Release();          // 模块6：未启用时句柄为 INVALID_HANDLE，释放无害
    g_pl.Release();          // 模块7：无内部资源，占位调用
+   g_pat.Release();         // 模块8：无内部资源，占位调用
    EventKillTimer();
   }
 //+------------------------------------------------------------------+
@@ -461,51 +539,77 @@ int OnCalculate(const int rates_total,
                 const long &volume[],
                 const int &spread[])
   {
-   //--- 预热bar数：只计入「已启用」的模块所需的最长预热区
-   int minBars = 5;
-   if(InpMacdEnabled)
-      minBars = MathMax(minBars, InpMacdSlow + InpMacdSignal + 5);
-   if(InpOscEnabled)
-      minBars = MathMax(minBars, InpOscK + InpOscD + InpOscSlowing + 5);
-   if(InpMaEnabled)
-      minBars = MathMax(minBars, InpMaSlow + 5);
+   //--- 预热bar数（与 OnInit 共用同一口径）
+   int minBars = WarmupBars();
 
    //--- ★ 外观层：倒计时 / 网格线，必须在最前面无条件执行
    //    历史故障复盘：这两个 Update 原先排在函数末尾，而函数上半部分散布着
    //    "数据未就绪就 return(0)" 的守卫；只要守卫被触发，本 tick 的倒计时与
    //    网格线就整轮不刷新，表现为"倒计时定格不动 / 只画了一次"。
    //    外观层不依赖任何指标数据，因此提到最前，且永不被后续逻辑短路。
-   g_cd.Update(_Symbol, _Period);       // 模块3：倒计时 + 实时价格
-   g_grid.Update(_Symbol, _Period);     // 模块4：网格线（模块内部自行节流）
+   //    返回值 = 对象是否真的发生变化，只有变化时才重绘（省掉每 tick 的 ChartRedraw）
+   bool uiChanged = false;
+   uiChanged = g_cd.Update(_Symbol, _Period)   || uiChanged;   // 模块3：倒计时 + 实时价格
+   uiChanged = g_grid.Update(_Symbol, _Period) || uiChanged;   // 模块4：网格线（模块内部自行节流）
 
    //--- ★ 数据层：各模块「启用 + 就绪」互相独立，任一缺席只影响依赖它的信号模式
    bool enough = (rates_total >= minBars);
-   g_candle.Prepare(rates_total);                                        // 模块5：ATR（可选，未就绪也不影响着色）
-   bool macdOk = InpMacdEnabled && enough && g_macd.Calculate(rates_total, prev_calculated); // 模块1：三线 MACD
-   bool rsiOk  = (!(InpMacdEnabled && InpMacdUseRSI)) || g_rsi.Prepare(rates_total, prev_calculated); // 模块1b：RSI
-   bool oscOn  = InpOscEnabled;                                          // 模块2：震荡（触发由 Signal() 内部判就绪）
 
-   //--- 首次计算：清空信号缓冲区，避免历史区出现乱值
-   if(prev_calculated == 0)
-     {
-      ArrayInitialize(BufBuy,  EMPTY_VALUE);
-      ArrayInitialize(BufSell, EMPTY_VALUE);
-     }
+   //--- 数据完整性：上一轮若未就绪，本轮传 0 让各模块整体重取（历史不得被永久跳过）
+   int prevForModules = g_needFull ? 0 : prev_calculated;
 
-   //--- 增量计算：K线着色需覆盖全部bar，故首次从0开始
-   int start = (prev_calculated > 0 && prev_calculated <= rates_total) ? prev_calculated - 1 : 0;
+   bool cdlOk  = g_candle.Prepare(rates_total, prevForModules);              // 模块5：ATR（可选）
+   bool macdOk = InpMacdEnabled && enough && g_macd.Calculate(rates_total, prevForModules); // 模块1
+   bool oscOk  = InpOscEnabled  && enough && g_osc.Prepare(rates_total, prevForModules);    // 模块2
+   bool rsiOk  = true;
+   if(InpMacdEnabled && InpMacdUseRSI)                                       // 模块1b：RSI
+      rsiOk = g_rsi.Prepare(rates_total, prevForModules);
 
-   //--- 5-1 K线着色：独立于 MACD/Stoch 就绪状态，永远写满 [start, rates_total)
+   //--- 当前信号模式真正依赖哪些模块（依赖项未就绪 => 本轮不出信号，等下一轮补算）
+   bool macdReq = InpMacdEnabled && (InpMode == MODE_MACD || InpMode == MODE_FILTER || InpMode == MODE_MOMENTUM);
+   bool oscReq  = InpOscEnabled  && (InpMode == MODE_FILTER || InpMode == MODE_ANY);
+   bool rsiReq  = InpMacdEnabled && InpMacdUseRSI && InpMode == MODE_MOMENTUM;
+
+   bool depsOk = (!macdReq || macdOk) && (!oscReq || oscOk) && (!rsiReq || rsiOk);
+   bool dataOk = depsOk && cdlOk;
+
+   //--- 计算起点：需要全量重算时从 0 开始（g_needFull 保证历史不被漏算）
+   bool full  = (g_needFull || prev_calculated <= 0 || prev_calculated > rates_total);
+   int  start = full ? 0 : prev_calculated - 1;
+
+   //--- 缓冲区清空：纯数组写入，代价极低，必须先于任何分类逻辑
    for(int i = start; i < rates_total; i++)
      {
-      //--- 模块5：K线着色（每根bar都要写，否则新bar会出现垃圾值）
-      //    先全部置 EMPTY_VALUE = 「不绘制」，再按分类决定是否覆盖真实 OHLC
       CandleOpen[i]  = EMPTY_VALUE;
       CandleHigh[i]  = EMPTY_VALUE;
       CandleLow[i]   = EMPTY_VALUE;
       CandleClose[i] = EMPTY_VALUE;
       CandleColor[i] = 0;
-      if(g_candle.Enabled())
+      PatOpen[i]  = EMPTY_VALUE;
+      PatHigh[i]  = EMPTY_VALUE;
+      PatLow[i]   = EMPTY_VALUE;
+      PatClose[i] = EMPTY_VALUE;
+      PatColor[i] = 0;
+      BufBuy[i]   = EMPTY_VALUE;
+      BufSell[i]  = EMPTY_VALUE;
+     }
+
+   //--- 模块7：价格折线（高/低/开）—— 仅依赖价格序列，无条件刷新
+   g_pl.Fill(start, rates_total, open, high, low, PLHigh, PLLow, PLOpen);
+
+   //--- 数据不全：保留 g_needFull，本轮不写分类/信号，下轮从 0 全量补算
+   if(!dataOk)
+     {
+      g_needFull = true;
+      if(uiChanged)
+         ChartRedraw(0);
+      return(rates_total);
+     }
+
+   //--- 5-1 K线着色（模块5，默认关闭；开启时覆盖 [start, rates_total)）
+   //    独立于 MACD/Stoch 就绪状态：只要 ATR 就绪即写满，避免新bar出现垃圾值
+   if(g_candle.Enabled())
+      for(int i = start; i < rates_total; i++)
         {
          //--- 分类（内部顺带处理预警，故须在「是否绘制」判定之前调用）
          int cidx = g_candle.ColorIndex(_Symbol, _Period, i, rates_total, prev_calculated,
@@ -523,17 +627,32 @@ int OnCalculate(const int rates_total,
            }
         }
 
-      //--- 信号缓冲区清空
-      BufBuy[i]  = EMPTY_VALUE;
-      BufSell[i] = EMPTY_VALUE;
+   //--- 5-2 形态识别（模块8）：命中后对「整段」着色（含段内被忽略的小实体K线）
+   //    段起点可能早于本轮增量起点 start，故不裁剪（越界由 MatchEndingAt 保证 >=0）
+   if(g_pat.Enabled())
+      for(int i = start; i < rates_total; i++)
+        {
+         if(InpPatOnlyClosed && i == rates_total - 1)   // 未收盘bar不确认，防重绘
+            continue;
 
-     }
+         int segStart = i;
+         int dir = g_pat.MatchEndingAt(i, open, close, segStart);
+         if(dir == 0)
+            continue;
 
-   //--- 模块7：价格折线（高/低/开）—— 仅依赖价格序列，无条件刷新
-   g_pl.Fill(start, rates_total, open, high, low, PLHigh, PLLow, PLOpen);
+         int kFrom = (segStart > 0) ? segStart : 0;
+         for(int k = kFrom; k <= i; k++)
+           {
+            PatOpen[k]  = open[k];
+            PatHigh[k]  = high[k];
+            PatLow[k]   = low[k];
+            PatClose[k] = close[k];
+            PatColor[k] = (dir > 0) ? 0 : 1;    // 0=涨-跌-涨 / 1=跌-涨-跌
+           }
+        }
 
-   //--- 5-2 信号层：模块就绪与否不再整体短路，改为循环内按「当前模式依赖哪些模块」判定
-   //--- 历史不足的bar不出信号（K线着色不受此限制，已在上一步写完）
+   //--- 5-3 信号层：依赖模块已由 dataOk 保证就绪，循环内按「当前模式」取数
+   //--- 历史不足的bar不出信号（K线着色/形态不受此限制）
    for(int i = MathMax(start, minBars); i < rates_total; i++)
      {
       //--- 防重绘：最右一根未收盘bar不出信号
@@ -547,8 +666,8 @@ int OnCalculate(const int rates_total,
          trend = g_macd.TrendState(i);
          cross = g_macd.CrossSignal(i);
         }
-      if(oscOn)    // 模块2：震荡触发
-         trig = g_osc.Signal(i, rates_total);
+      if(oscOk)    // 模块2：震荡触发（内部查已预取的K线表，不再逐bar CopyBuffer）
+         trig = g_osc.Signal(i);
 
       //--- 信号合成：改你的交易规则 = 改这里
       bool buy = false, sell = false;
@@ -599,9 +718,13 @@ int OnCalculate(const int rates_total,
       if(sell) BufSell[i] = high[i];
      }
 
+   //--- 全量+所有依赖均就绪：清除「需要全量重算」标记
+   g_needFull = false;
+
    //--- 外观对象（倒计时文本/位置、网格线样式）改动后需一次重绘才会立即显现
    //    注：外观层已在函数开头刷新过，这里只负责"把结果画出来"
-   ChartRedraw(0);
+   if(uiChanged)
+      ChartRedraw(0);
 
    return(rates_total);
   }
@@ -612,8 +735,10 @@ int OnCalculate(const int rates_total,
 //+------------------------------------------------------------------+
 void OnTimer()
   {
-   g_cd.Update(_Symbol, _Period);      // 模块3：每秒刷新
-   g_grid.Update(_Symbol, _Period);    // 模块4：内部节流到设定的更新间隔
-   ChartRedraw(0);
+   bool changed = false;
+   changed = g_cd.Update(_Symbol, _Period)   || changed;   // 模块3：每秒刷新
+   changed = g_grid.Update(_Symbol, _Period) || changed;   // 模块4：内部节流到设定的更新间隔
+   if(changed)
+      ChartRedraw(0);
   }
 //+------------------------------------------------------------------+

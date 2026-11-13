@@ -31,6 +31,7 @@ private:
    RsiSettings        m_cfg;
    int                m_h;      // RSI 句柄
    double             m_rsi[];  // RSI 序列（与主循环同序：索引 0 = 最老）
+   double             m_tmp[];  // 拷贝中转（非指标缓冲区禁止直接部分拷贝，见 MacdTrend 文件头）
 
 public:
                      CRsiFilter(void) : m_h(INVALID_HANDLE) {}
@@ -65,32 +66,44 @@ public:
      }
 
    //--- 增量取数（未就绪返回 false，调用方等待下个Tick即可）
+   //    ★ 铁律：CopyBuffer 对「非指标缓冲区」做部分拷贝，会把目标数组压成
+   //      「拷贝数量」那么大、且数据落在起始处。必须经中转数组，再按
+   //      off = rates_total - copied 对齐回填（与 MacdTrend 同口径）。
    bool               Prepare(const int rates_total,const int prev_calculated)
      {
       if(m_h == INVALID_HANDLE || rates_total <= m_cfg.Period + 1)
          return(false);
 
+      //--- 缓冲区尺寸变化 => 内容失效，强制整体重取
+      int prev = prev_calculated;
       if(ArraySize(m_rsi) != rates_total)
+        {
          ArrayResize(m_rsi, rates_total);
+         prev = 0;
+        }
 
-      //--- 句柄历史未算够时等待
-      if(BarsCalculated(m_h) < rates_total)
-         return(false);
-
-      int to_copy;
-      if(prev_calculated <= 0 || prev_calculated > rates_total)
-         to_copy = rates_total;                                 // 首次/历史被截断：整体重取
+      //--- 不使用 BarsCalculated 硬性拒绝：终端历史尚在加载时它会长期小于
+      //    rates_total，硬拒绝会让信号永久空转（同 MacdTrend 的修复口径）
+      int need;
+      if(prev <= 0 || prev > rates_total)
+         need = rates_total;
       else
         {
-         to_copy = rates_total - prev_calculated;
-         if(prev_calculated > 0)
-            to_copy++;
+         need = rates_total - prev + 1;
+         if(need < 1)
+            need = 1;
         }
-      if(to_copy <= 0)
-         return(true);
 
-      if(CopyBuffer(m_h, 0, 0, to_copy, m_rsi) <= 0)
+      ArrayFree(m_tmp);
+      int copied = CopyBuffer(m_h, 0, 0, need, m_tmp);
+      if(copied <= 0)
          return(false);
+
+      int off = rates_total - copied;
+      if(off < 0)
+         return(false);
+      for(int k = 0; k < copied; k++)
+         m_rsi[off + k] = m_tmp[k];
 
       return(true);
      }
