@@ -41,14 +41,14 @@ mql5_skeleton/
 | 系统设置 | InpMode | **MODE_MACD=MACD二线交叉（默认，主信号）**；MODE_FILTER=Stoch触发+MACD方向过滤；MODE_MOMENTUM=柱动量耗尽确认（加速→减速→反向穿越）；MODE_ANY=仅震荡触发（测试用） |
 | 系统设置 | InpOnlyClosed | true=只在K线收盘后出信号（**防重绘**，回测/实盘建议保持true） |
 | 模块1 网格线 | Enabled/AutoDetect/Interval/NumLines/各类型线型/预警 | 网格间隔自动检测、每类线颜色线型、触及预警（由 line.mq5 提炼，对象前缀 MSGL_）；**默认开启：整数位(实线) / 四分位(点线 dot) / 中位(实线)，八分位默认关闭**（v1.39 起，需要时勾选，线型默认 dash）。自动检测见下方说明 |
-| 模块2 价格折线 | Enabled/ShowHigh/ShowLow/ShowOpen/各线颜色线型线宽 | 用**最高价/最低价/开盘价**各画一条折线（随价格序列逐bar连线），**三条线可独立开关**（**High/Low 默认开，Open 默认关**）。实现：指标缓冲区 + `DRAW_LINE`（plot3=High / plot4=Low / plot5=Open）；关闭的线在 `OnInit` 里把对应 plot 设为 `DRAW_NONE`，完全不绘制 |
+| 模块2 价格折线 | Enabled/ShowHigh/ShowLow/ShowOpen/各线颜色线型线宽 | 用**最高价/最低价/开盘价**各画一条折线（随价格序列逐bar连线），**三条线可独立开关**（**High/Low 默认开，Open 默认关**）。实现：指标缓冲区 + `DRAW_LINE`（plot3=High / plot4=Low / plot5=Open）；关闭的线由 `Fill()` 写 `EMPTY_VALUE`，完全不绘制 |
 | 模块3 倒计时 | Enabled/FontSize/Color/X/Y/ShowPrice/Separator | 是否启用、字体、偏移、实时价格开关、分隔符（由 timer.mq5 提炼） |
 | 模块4 MACD二线 | **Enabled**/Fast/Slow/Signal/Price/HistMult | **独立开关（v1.38 起默认关闭）**；快线EMA、慢线EMA、信号线DEA(SMA平滑，同iMACD)、应用价格、柱放大倍数(默认1=与2linemacd柱值一致)。关闭时不创建句柄（零开销），依赖它的 MODE_MACD / MODE_MOMENTUM / MODE_FILTER 随之失效 |
 | 模块4b MACD动量 | RunLen/DecelMin/Lookback | 加速段最少连续柱数(6)、减速段最少连续柱数(1)、结构最大回看柱数(50)；仅 MODE_MOMENTUM 生效 |
 | 模块4b RSI过滤 | UseRSI/RSIPeriod/RSILevel | **独立开关**（UseRSI，默认**关**）；是否叠加 RSI 顺势过滤、周期(14)、多空分界(50)。依赖模块4，模块4关闭时本项不生效 |
 | 模块5 震荡 | **Enabled**/K/D/Slowing/阈值 | **独立开关（v1.38 起默认关闭）**；Stochastic参数与超买超卖阈值。关闭时不创建句柄（零开销），依赖震荡触发的 MODE_FILTER / MODE_ANY 不再出信号 |
 | 模块6 K线着色 | Enabled/**HideNormal**/**UseATR**/六色/ATR倍数与周期/各周期点数阈值(回退)/影线/预警 | **独立开关（v1.29 起默认关闭，InpCandleEnabled=false）**；6色K线分类、ATR自适应阈值（由 candle.mq5 提炼，plot0=DRAW_COLOR_CANDLES）。**HideNormal 默认开启 = 不绘制普通K线**，仅高亮特殊K线，普通K线交由图表原生绘制；**UseATR 默认开启**：大实体阈值 = `ATR × 倍数(默认1.5)`，ATR 未就绪时回退到「各周期最小实体点数」表 |
-| 模块7 双均线 | Enabled/Fast/Slow/Method/Price/**颜色/线型/粗细** | **默认开启，13 EMA / 30 EMA**（`MODE_EMA`、`PRICE_CLOSE`）。两个作用：① **画线**——plot7/plot8 输出快线与慢线，颜色/线型/粗细（1-5）可分别调整，关闭时 plot 置 `DRAW_NONE`；② **方向过滤**——任何模式产出的信号必须与双均线方向一致，否则丢弃。数据经 `Prepare()` 批量增量预取，过滤只查表 |
+| 模块7 双均线 | Enabled/Fast/Slow/Method/Price/**颜色/线型/粗细** | **默认开启，13 EMA / 30 EMA**（`MODE_EMA`、`PRICE_CLOSE`）。两个作用：① **画线**——plot7/plot8 输出快线与慢线，颜色/线型/粗细（1-5）可分别调整，关闭时缓冲全写 `EMPTY_VALUE`，不绘制；② **方向过滤**——任何模式产出的信号必须与双均线方向一致，否则丢弃。数据经 `Prepare()` 批量增量预取，过滤只查表 |
 | 模块8 形态识别 | Enabled/X/Y/Z/MinBody/AllowLonger/OnlyClosed/**MaxBars**/四色 | **独立开关（v1.38 起默认关闭）**；命中 `x根阳 + 1..y根阴 + z根阳`（或镜像）后对整段着色，plot6=`DRAW_COLOR_CANDLES`，涨形态绿 / 跌形态红 / 回调灰 / 重叠黄。**x/z 必须 >= 2，y 为上限**。小实体（实体 < `MinBody` 点）**不计数、不打断**。只处理最近 `MaxBars`(默认2000) 根。规则见下方说明 |
 
 调好一组参数后：图表右键 → 指标列表 → 保存为 **.set 预设文件**，之后一键切换。
@@ -110,10 +110,16 @@ mql5_skeleton/
 > **模块2「价格折线」**（`InpPLEnabled`，**默认开启**）：
 > 用 `high[]` / `low[]` / `open[]` 三条价格序列各连一条折线（plot3/4/5，缓冲区 7/8/9）。
 > 三条线由 `InpPLShowHigh` / `InpPLShowLow` / `InpPLShowOpen` **独立开关**（**High/Low 默认开，Open 默认关**）：
-> 关闭某条线时，`OnInit` 把该 plot 的 `PLOT_DRAW_TYPE` 设为 `DRAW_NONE`（彻底不绘制，也从数据窗口隐藏），
-> 同时模块 `Fill()` 对该缓冲区写 `EMPTY_VALUE` 双保险。
+> 关闭某条线时，模块 `Fill()` 对该缓冲区写 `EMPTY_VALUE`（`PLOT_EMPTY_VALUE = EMPTY_VALUE`，不绘制）。
+> **不要用 `PlotIndexSetInteger(i, PLOT_DRAW_TYPE, DRAW_NONE)` 隐藏 plot** —— 见下方「绘图属性禁忌」。
 > 该模块只依赖价格序列、不依赖任何指标就绪状态，故在 `OnCalculate` 中**无条件刷新**，与 K 线着色同层。
 > 注：是否开启某一开关会触发指标重新初始化（改参数即重算），这是 MQL5 指标绘图属性的正常行为。
+
+> **绘图属性禁忌（v1.44 实证）**：不要在 `OnInit` 里运行时改写 `PLOT_DRAW_TYPE`（例如把关闭的 plot 设为 `DRAW_NONE`）。
+> MT5 会按新类型重算 plot → 缓冲区映射：把 `DRAW_COLOR_CANDLES`（占 5 个缓冲）改成 `DRAW_NONE` 后，
+> **其后所有 plot 的缓冲区整体前移**，症状是后面的 plot「缓冲区有值、数据窗口空白、图上不画线」。
+> 正确做法：`#property` 里定死类型，显隐只靠数据 —— 关闭时向缓冲区写 `EMPTY_VALUE`，并把 `PLOT_EMPTY_VALUE` 设为 `EMPTY_VALUE`。
+> 颜色 / 线型 / 线宽 / `PLOT_COLOR_INDEXES` / `PLOT_EMPTY_VALUE` 可以安全地在运行时设置。
 
 > **模块8「形态识别」**（`InpPatEnabled`，**默认开启**）：
 > 规则：`x 根连续阳线 + y 根连续阴线 + z 根连续阳线`（涨→回调→涨），或镜像 `x 根阴 + y 根阳 + z 根阴`（跌→反弹→跌）。命中后对**整段**（第一段起点到最后一根）着色，plot6 = `DRAW_COLOR_CANDLES`。

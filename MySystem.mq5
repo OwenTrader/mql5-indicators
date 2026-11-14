@@ -15,9 +15,9 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.42"
+#property version     "1.44"
 #property description "模块化交易系统骨架：主指标聚合器"
-#property description "默认开启：网格线 + 价格折线(高/低/开) + K线倒计时 + 双均线(13/30 EMA，含画线)"
+#property description "默认开启：网格线 + 价格折线(高/低) + K线倒计时 + 双均线(13/30 EMA，含画线)"
 #property description "默认关闭：MACD二线交叉 / 震荡触发 / MACD动量 / K线着色 / 形态识别"
 #property indicator_chart_window
 #property indicator_buffers 17
@@ -357,20 +357,20 @@ int OnInit()
    PlotIndexSetDouble(1, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    PlotIndexSetDouble(2, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   //--- 模块2：价格折线 plot 属性（颜色/线宽/线型；关闭的线设为 DRAW_NONE 不绘制）
-   PlotIndexSetInteger(3, PLOT_DRAW_TYPE, (InpPLEnabled && InpPLShowHigh) ? DRAW_LINE : DRAW_NONE);
+   //--- 模块2：价格折线 plot 属性（颜色/线宽/线型）；关闭的线由 Fill() 写 EMPTY_VALUE 隐藏
+   //--- 注意：运行时【不要】改写 PLOT_DRAW_TYPE。MT5 会据此重算 plot->buffer 映射，
+   //    多缓冲 plot（DRAW_COLOR_CANDLES）改成 DRAW_NONE 时会把后续 plot 的缓冲整体挪位，
+   //    表现为「后面的 plot 有值却画不出来、数据窗口空白」。显隐一律由数据（EMPTY）控制。
    PlotIndexSetInteger(3, PLOT_LINE_COLOR, InpPLHighColor);
    PlotIndexSetInteger(3, PLOT_LINE_WIDTH, InpPLHighWidth);
    PlotIndexSetInteger(3, PLOT_LINE_STYLE, InpPLHighStyle);
    PlotIndexSetDouble (3, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   PlotIndexSetInteger(4, PLOT_DRAW_TYPE, (InpPLEnabled && InpPLShowLow) ? DRAW_LINE : DRAW_NONE);
    PlotIndexSetInteger(4, PLOT_LINE_COLOR, InpPLLowColor);
    PlotIndexSetInteger(4, PLOT_LINE_WIDTH, InpPLLowWidth);
    PlotIndexSetInteger(4, PLOT_LINE_STYLE, InpPLLowStyle);
    PlotIndexSetDouble (4, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   PlotIndexSetInteger(5, PLOT_DRAW_TYPE, (InpPLEnabled && InpPLShowOpen) ? DRAW_LINE : DRAW_NONE);
    PlotIndexSetInteger(5, PLOT_LINE_COLOR, InpPLOpenColor);
    PlotIndexSetInteger(5, PLOT_LINE_WIDTH, InpPLOpenWidth);
    PlotIndexSetInteger(5, PLOT_LINE_STYLE, InpPLOpenStyle);
@@ -378,7 +378,6 @@ int OnInit()
 
    //--- 模块8：形态识别 plot 属性（4 个颜色槽：0=主体阳线 / 1=主体阴线 /
    //    2=回调与小实体 / 3=形态重叠）
-   PlotIndexSetInteger(6, PLOT_DRAW_TYPE, InpPatEnabled ? DRAW_COLOR_CANDLES : DRAW_NONE);
    PlotIndexSetInteger(6, PLOT_COLOR_INDEXES, 4);
    PlotIndexSetInteger(6, PLOT_LINE_COLOR, 0, InpPatBullColor);
    PlotIndexSetInteger(6, PLOT_LINE_COLOR, 1, InpPatBearColor);
@@ -386,17 +385,23 @@ int OnInit()
    PlotIndexSetInteger(6, PLOT_LINE_COLOR, 3, InpPatOverlapColor);
    PlotIndexSetDouble (6, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   //--- 模块7：双均线 plot 属性（开关/颜色/线型/粗细；关闭时 DRAW_NONE）
-   PlotIndexSetInteger(7, PLOT_DRAW_TYPE, InpMaEnabled ? DRAW_LINE : DRAW_NONE);
-   PlotIndexSetInteger(7, PLOT_LINE_COLOR, InpMaFastColor);
-   PlotIndexSetInteger(7, PLOT_LINE_STYLE, InpMaFastStyle);
-   PlotIndexSetInteger(7, PLOT_LINE_WIDTH, InpMaFastWidth);
+   //--- 模块7：双均线 plot 属性（颜色/线型/粗细）；关闭时缓冲全 EMPTY，不绘制
    PlotIndexSetDouble (7, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   PlotIndexSetInteger(8, PLOT_DRAW_TYPE, InpMaEnabled ? DRAW_LINE : DRAW_NONE);
-   PlotIndexSetInteger(8, PLOT_LINE_COLOR, InpMaSlowColor);
+   //--- 颜色/线宽兜底：旧图表实例可能把新加的 input 存成 0（黑色 / 宽度 0），
+   //    在黑色背景上等于完全隐形。0 视为「未设置」，回落到默认值。
+   color cFast = (InpMaFastColor == clrBlack) ? clrDodgerBlue : InpMaFastColor;
+   color cSlow = (InpMaSlowColor == clrBlack) ? clrOrangeRed  : InpMaSlowColor;
+   int   wFast = InpMaFastWidth; if(wFast < 1) wFast = 1; if(wFast > 5) wFast = 5;
+   int   wSlow = InpMaSlowWidth; if(wSlow < 1) wSlow = 1; if(wSlow > 5) wSlow = 5;
+
+   PlotIndexSetInteger(7, PLOT_LINE_COLOR, cFast);
+   PlotIndexSetInteger(7, PLOT_LINE_STYLE, InpMaFastStyle);
+   PlotIndexSetInteger(7, PLOT_LINE_WIDTH, wFast);
+
+   PlotIndexSetInteger(8, PLOT_LINE_COLOR, cSlow);
    PlotIndexSetInteger(8, PLOT_LINE_STYLE, InpMaSlowStyle);
-   PlotIndexSetInteger(8, PLOT_LINE_WIDTH, InpMaSlowWidth);
+   PlotIndexSetInteger(8, PLOT_LINE_WIDTH, wSlow);
    PlotIndexSetDouble (8, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
    //--- 预热bar数：只计入「已启用」的模块所需的最长预热区（与 OnCalculate 同一函数）
@@ -404,7 +409,7 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.42");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.44");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -562,11 +567,11 @@ int OnInit()
       Print("OnInit: EventSetTimer 失败, err=", GetLastError(),
             " —— 倒计时将退化为仅随 tick 刷新");
 
-   //--- 模块7 自检日志（排查「均线不显示」时先看这里）
-   PrintFormat("MySystem v%s init: MA=%s period=%d/%d %s applied=%s plot7/8=%s",
-               "1.42", InpMaEnabled ? "ON" : "OFF", InpMaFast, InpMaSlow,
-               EnumToString(InpMaMethod), EnumToString(InpMaPrice),
-               InpMaEnabled ? "DRAW_LINE" : "DRAW_NONE");
+   //--- 初始化自检（排查显示问题时先看这行）
+   PrintFormat("MySystem v%s init: symbol=%s tf=%s MA=%s(%d/%d %s)",
+               "1.44", _Symbol, EnumToString(_Period),
+               InpMaEnabled ? "ON" : "OFF", InpMaFast, InpMaSlow,
+               EnumToString(InpMaMethod));
 
    //--- 首次绘制网格线
    g_grid.Update(_Symbol, _Period);
