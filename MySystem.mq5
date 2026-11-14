@@ -15,7 +15,7 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.39"
+#property version     "1.40"
 #property description "模块化交易系统骨架：主指标聚合器"
 #property description "默认开启：网格线(整数/四分位/中位/八分位) + 价格折线(高/低/开) + K线倒计时"
 #property description "默认关闭：MACD二线交叉 / 震荡触发 / MACD动量 / 双均线过滤 / K线着色 / 形态识别"
@@ -64,7 +64,7 @@
 #include "Modules\Countdown.mqh"
 #include "Modules\GridLines.mqh"
 #include "Modules\BigCandles.mqh"
-#include "Modules\TrendMA.mqh"    // 模块7：双均线趋势（可选，默认关闭；参数组在设置页最底部）
+#include "Modules\TrendMA.mqh"    // 模块7：双均线趋势（默认开启，13/30 EMA 方向过滤）
 #include "Modules\PriceLines.mqh" // 模块2：价格折线（高/低/开，三条折线可独立开关）
 #include "Modules\PatternSig.mqh" // 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）
 
@@ -197,10 +197,10 @@ input bool   InpCdlAlertShadow = true;               // 大影线K线预警
 input bool   InpCdlDebug       = false;              // 显示调试信息
 
 //=== 可选模块：参数组按约定统一排在设置页最底部，默认关闭、不参与信号 ===
-input group "══════ 模块7：双均线趋势(默认关闭) ══════"
-input bool               InpMaEnabled = false;          // 启用双均线模块
-input int                InpMaFast    = 20;             // 快线周期
-input int                InpMaSlow    = 60;             // 慢线周期
+input group "══════ 模块7：双均线趋势(默认开启，方向过滤) ══════"
+input bool               InpMaEnabled = true;           // 启用双均线模块
+input int                InpMaFast    = 13;             // 快线周期(默认13 EMA)
+input int                InpMaSlow    = 30;             // 慢线周期(默认30 EMA)
 input ENUM_MA_METHOD     InpMaMethod  = MODE_EMA;       // 均线算法
 input ENUM_APPLIED_PRICE InpMaPrice   = PRICE_CLOSE;    // 应用价格
 
@@ -225,7 +225,7 @@ CRsiFilter       g_rsi;
 CCountdownModule g_cd;
 CGridModule      g_grid;
 CBigCandleModule g_candle;
-CTrendModule     g_ma;      // 模块7：双均线（默认未启用，未启用时不创建句柄）
+CTrendModule     g_ma;      // 模块7：双均线（默认启用 13/30 EMA）
 CPriceLineModule g_pl;      // 模块2：价格折线（高/低/开）
 CPatternModule   g_pat;     // 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）
 
@@ -366,7 +366,7 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.39");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.40");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -485,7 +485,7 @@ int OnInit()
    if(!g_candle.Create(_Symbol, _Period, bc))
       return(INIT_FAILED);
 
-   //--- 模块7：双均线趋势（可选，默认关闭；关闭时不创建句柄，零开销）
+   //--- 模块7：双均线趋势（默认开启；关闭时不创建句柄，零开销）
    if(InpMaEnabled)
      {
       TrendSettings tc;
@@ -838,7 +838,7 @@ int OnCalculate(const int rates_total,
            break;
         }
 
-      //--- 模块7：双均线方向过滤（可选，默认关闭）
+      //--- 模块7：双均线方向过滤（默认开启）
       //    只有已出现候选信号时才去取均线值，避免全历史逐bar取数（性能）
       if(InpMaEnabled && (buy || sell))
         {

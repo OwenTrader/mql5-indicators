@@ -14,7 +14,7 @@ mql5_skeleton/
 │   ├── RsiFilter.mqh   ← 模块4b：RSI 方向过滤（可选，顺势确认）｜默认关
 │   ├── OscSignal.mqh   ← 模块5：震荡触发（Stoch 超买超卖穿越）｜默认关
 │   ├── BigCandles.mqh  ← 模块6：K线着色（大实体/大影线 6 色 + ATR 自适应）｜默认关
-│   ├── TrendMA.mqh     ← 模块7：双均线趋势（方向过滤）｜默认关
+│   ├── TrendMA.mqh     ← 模块7：双均线趋势（13/30 EMA 方向过滤，不画线）｜默认开
 │   └── PatternSig.mqh  ← 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）｜默认关
 └── README.md
 ```
@@ -48,7 +48,7 @@ mql5_skeleton/
 | 模块4b RSI过滤 | UseRSI/RSIPeriod/RSILevel | **独立开关**（UseRSI，默认**关**）；是否叠加 RSI 顺势过滤、周期(14)、多空分界(50)。依赖模块4，模块4关闭时本项不生效 |
 | 模块5 震荡 | **Enabled**/K/D/Slowing/阈值 | **独立开关（v1.38 起默认关闭）**；Stochastic参数与超买超卖阈值。关闭时不创建句柄（零开销），依赖震荡触发的 MODE_FILTER / MODE_ANY 不再出信号 |
 | 模块6 K线着色 | Enabled/**HideNormal**/**UseATR**/六色/ATR倍数与周期/各周期点数阈值(回退)/影线/预警 | **独立开关（v1.29 起默认关闭，InpCandleEnabled=false）**；6色K线分类、ATR自适应阈值（由 candle.mq5 提炼，plot0=DRAW_COLOR_CANDLES）。**HideNormal 默认开启 = 不绘制普通K线**，仅高亮特殊K线，普通K线交由图表原生绘制；**UseATR 默认开启**：大实体阈值 = `ATR × 倍数(默认1.5)`，ATR 未就绪时回退到「各周期最小实体点数」表 |
-| 模块7 双均线 | Enabled/Fast/Slow/Method/Price | **可选模块，默认关闭（InpMaEnabled=false，关闭时不创建句柄、零开销）**；启用后作为方向过滤：任何模式产出的信号都必须与双均线方向一致，否则丢弃。参数组按约定排在设置页**最底部** |
+| 模块7 双均线 | Enabled/Fast/Slow/Method/Price | **默认开启，13 EMA / 30 EMA**（`InpMaEnabled=true`，`InpMaFast=13`，`InpMaSlow=30`，`MODE_EMA`）；作用为**方向过滤**：任何模式产出的信号都必须与双均线方向一致，否则丢弃。**该模块不绘制均线**（无独立 plot），关闭时不创建句柄、零开销 |
 | 模块8 形态识别 | Enabled/X/Y/Z/MinBody/AllowLonger/OnlyClosed/**MaxBars**/四色 | **独立开关（v1.38 起默认关闭）**；命中 `x根阳 + 1..y根阴 + z根阳`（或镜像）后对整段着色，plot6=`DRAW_COLOR_CANDLES`，涨形态绿 / 跌形态红 / 回调灰 / 重叠黄。**x/z 必须 >= 2，y 为上限**。小实体（实体 < `MinBody` 点）**不计数、不打断**。只处理最近 `MaxBars`(默认2000) 根。规则见下方说明 |
 
 调好一组参数后：图表右键 → 指标列表 → 保存为 **.set 预设文件**，之后一键切换。
@@ -133,8 +133,8 @@ mql5_skeleton/
 > - **去重**：写缓冲区前比对「同色 + 同收盘价」，同一根bar不重复落笔。
 
 > **模块独立性（每个模块都能独立关闭）**：
-> **默认开启**：模块1 网格线、模块2 价格折线、模块3 倒计时（三个纯显示模块，参数组排在最前）。
-> **默认关闭**：模块4 MACD、模块4b RSI、模块5 震荡、模块6 K线着色、模块7 双均线、模块8 形态识别。
+> **默认开启**：模块1 网格线、模块2 价格折线、模块3 倒计时（纯显示，参数组排最前）、模块7 双均线（13/30 EMA，方向过滤）。
+> **默认关闭**：模块4 MACD、模块4b RSI、模块5 震荡、模块6 K线着色、模块8 形态识别。
 > 开关变量：模块1 `InpGridEnabled`、模块2 `InpPLEnabled`、模块3 `InpCdEnabled`、模块4 `InpMacdEnabled`、
 > 模块4b `InpMacdUseRSI`、模块5 `InpOscEnabled`、模块6 `InpCandleEnabled`、模块7 `InpMaEnabled`、模块8 `InpPatEnabled`。
 >
@@ -244,7 +244,7 @@ CopyBuffer(h, 0, start, 2, v);   // v[0]=index-1, v[1]=index（旧→新）
 - **MODE_MOMENTUM**：`MomentumCross()` 成立 → 买/卖（默认 加速6根 / 减速1根 / 回看50根）；
   勾选 `InpMacdUseRSI` 时叠加顺势过滤：做多要求 RSI ≥ 50，做空要求 RSI < 50（默认关闭）
 - **MODE_ANY**：仅看 Stoch 触发（测试用）
-- **模块7 双均线**（默认关闭）：勾选 `InpMaEnabled` 后叠加方向过滤 —— 最终信号必须与双均线方向一致，否则丢弃
+- **模块7 双均线**（默认开启 13/30 EMA）：叠加方向过滤 —— 最终信号必须与双均线方向一致，否则丢弃；**不画均线**，只在有候选信号时取值
 - 信号画在触发bar上：绿色↑ = Buy，红色↓ = Sell
 
 > **箭头落在哪根 bar**：`InpOnlyClosed=true`（默认）时只在 K 线**收盘后**判定，
