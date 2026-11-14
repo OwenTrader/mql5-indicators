@@ -15,7 +15,7 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.38"
+#property version     "1.39"
 #property description "模块化交易系统骨架：主指标聚合器"
 #property description "默认开启：网格线(整数/四分位/中位/八分位) + 价格折线(高/低/开) + K线倒计时"
 #property description "默认关闭：MACD二线交叉 / 震荡触发 / MACD动量 / 双均线过滤 / K线着色 / 形态识别"
@@ -94,7 +94,7 @@ input int             InpGridIntFontSize = 18;                // 整数位标签
 input bool            InpGridAlertInt    = false;             // 整数位预警
 input bool            InpGridShowQtr     = true;              // 显示四分之一位线条
 input color           InpGridQtrColor    = clrFireBrick;      // 四分之一位颜色
-input ENUM_LINE_STYLE InpGridQtrStyle    = STYLE_SOLID;       // 四分之一位线型
+input ENUM_LINE_STYLE InpGridQtrStyle    = STYLE_DOT;         // 四分之一位线型
 input int             InpGridQtrWidth    = 1;                 // 四分之一位线宽
 input int             InpGridQtrFontSize = 12;                // 四分之一位标签字号
 input bool            InpGridShowMid     = true;              // 显示中位线条
@@ -103,9 +103,9 @@ input ENUM_LINE_STYLE InpGridMidStyle    = STYLE_SOLID;       // 中位线线型
 input int             InpGridMidWidth    = 1;                 // 中位线线宽
 input int             InpGridMidFontSize = 16;                // 中位线标签字号
 input bool            InpGridAlertMid    = false;             // 中位线预警
-input bool            InpGridShowEig     = true;              // 显示八分位线条
+input bool            InpGridShowEig     = false;             // 显示八分位线条(默认关)
 input color           InpGridEigColor    = clrTeal;           // 八分位颜色
-input ENUM_LINE_STYLE InpGridEigStyle    = STYLE_DASHDOTDOT;  // 八分位线型
+input ENUM_LINE_STYLE InpGridEigStyle    = STYLE_DASH;        // 八分位线型
 input int             InpGridEigWidth    = 1;                 // 八分位线宽
 input int             InpGridEigFontSize = 10;                // 八分位标签字号
 input bool            InpGridShowLabels  = true;              // 显示价格标签
@@ -366,7 +366,7 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.38");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.39");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置

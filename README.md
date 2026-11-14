@@ -40,7 +40,7 @@ mql5_skeleton/
 |---|---|---|
 | 系统设置 | InpMode | **MODE_MACD=MACD二线交叉（默认，主信号）**；MODE_FILTER=Stoch触发+MACD方向过滤；MODE_MOMENTUM=柱动量耗尽确认（加速→减速→反向穿越）；MODE_ANY=仅震荡触发（测试用） |
 | 系统设置 | InpOnlyClosed | true=只在K线收盘后出信号（**防重绘**，回测/实盘建议保持true） |
-| 模块1 网格线 | Enabled/AutoDetect/Interval/NumLines/各类型线型/预警 | 网格间隔自动检测、每类线颜色线型、触及预警（由 line.mq5 提炼，对象前缀 MSGL_）；四类线条默认全开（整数/四分位/中位/**八分位**）。自动检测见下方说明 |
+| 模块1 网格线 | Enabled/AutoDetect/Interval/NumLines/各类型线型/预警 | 网格间隔自动检测、每类线颜色线型、触及预警（由 line.mq5 提炼，对象前缀 MSGL_）；**默认开启：整数位(实线) / 四分位(点线 dot) / 中位(实线)，八分位默认关闭**（v1.39 起，需要时勾选，线型默认 dash）。自动检测见下方说明 |
 | 模块2 价格折线 | Enabled/ShowHigh/ShowLow/ShowOpen/各线颜色线型线宽 | 用**最高价/最低价/开盘价**各画一条折线（随价格序列逐bar连线），**三条线可独立开关**（**High/Low 默认开，Open 默认关**）。实现：指标缓冲区 + `DRAW_LINE`（plot3=High / plot4=Low / plot5=Open）；关闭的线在 `OnInit` 里把对应 plot 设为 `DRAW_NONE`，完全不绘制 |
 | 模块3 倒计时 | Enabled/FontSize/Color/X/Y/ShowPrice/Separator | 是否启用、字体、偏移、实时价格开关、分隔符（由 timer.mq5 提炼） |
 | 模块4 MACD二线 | **Enabled**/Fast/Slow/Signal/Price/HistMult | **独立开关（v1.38 起默认关闭）**；快线EMA、慢线EMA、信号线DEA(SMA平滑，同iMACD)、应用价格、柱放大倍数(默认1=与2linemacd柱值一致)。关闭时不创建句柄（零开销），依赖它的 MODE_MACD / MODE_MOMENTUM / MODE_FILTER 随之失效 |
@@ -69,6 +69,16 @@ mql5_skeleton/
 > 之所以需要重套：网格对象会被 .chr 随图表持久化，重启后被 `SyncGrid` 判定为「已存在」而不再重建；
 > 若此时只更新标签位置、不重写样式，旧样式会一直留在图上（表现为「改了四分位线设置没反应」）。
 > 正常使用无需关心这条，改完参数即生效。
+
+> **网格线分层与默认值（v1.39）**：一个容器 `grid_size` 内部按 1/8 步长排布，共四类线：
+> | 类型 | 位置 | 默认开关 | 默认线型 |
+> |---|---|---|---|
+> | 整数位 INT | 0/8（容器边界） | 开 | 实线 solid，宽 2 |
+> | 四分位 QTR | 2/8、6/8 | 开 | **点线 dot** |
+> | 中位 MID | 4/8 | 开 | 实线 solid |
+> | 八分位 EIG | 1/8、3/8、5/8、7/8 | **关** | **dash**（勾选后生效） |
+>
+> 每类的颜色/线型/线宽/标签字号都可独立调整。
 
 > **网格线「自动检测品种」口径**（`InpGridAutoDetect`，默认开）：
 > 自动检测的结果都是「**网格间隔点数** `m_intervalPts`」，整数位线间距 `grid_size = m_intervalPts × SYMBOL_POINT`，
