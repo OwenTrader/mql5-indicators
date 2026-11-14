@@ -15,7 +15,7 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.35"
+#property version     "1.36"
 #property description "模块化交易系统骨架：主指标聚合器"
 #property description "主信号：MACD二线交叉(DIF上穿/下穿DEA，与 iMACD / 2linemacd 同口径) + 形态识别 + 网格线 + 倒计时 + 价格折线(高/低/开)"
 #property description "备选：震荡(Stoch)触发 / MACD柱动量耗尽确认 / 双均线过滤 / K线着色(均默认关闭)"
@@ -56,7 +56,7 @@
 //--- 模块8：形态识别（默认类型；关闭时 OnInit 里会改写为 DRAW_NONE）
 #property indicator_label7  "Pattern"
 #property indicator_type7   DRAW_COLOR_CANDLES
-#property indicator_color7  clrLime,clrRed,clrGray
+#property indicator_color7  clrLime,clrRed,clrGray,clrYellow
 
 #include "Modules\MacdTrend.mqh"
 #include "Modules\OscSignal.mqh"
@@ -213,6 +213,7 @@ input bool   InpPatOnlyClosed  = true;          // 仅收盘bar确认(防重绘)
 input color  InpPatBullColor = clrLime;         // 主体段阳线颜色(默认绿)
 input color  InpPatBearColor = clrRed;          // 主体段阴线颜色(默认红)
 input color  InpPatMidColor  = clrGray;         // 回调段/小实体颜色(默认灰)
+input color  InpPatOverlapColor = clrYellow;    // 形态重叠部分颜色(默认黄)
 
 //--- 模块实例（全局单例）
 CMacdModule      g_macd;
@@ -244,7 +245,13 @@ double PatOpen[];
 double PatHigh[];
 double PatLow[];
 double PatClose[];
-double PatColor[];        // 0=上涨形态 / 1=下跌形态
+double PatColor[];        // 0=主体阳线 / 1=主体阴线 / 2=回调与小实体 / 3=形态重叠
+
+//--- 模块8：重叠统计（非缓冲区）
+//    PatHits = 该bar被多少个形态覆盖（>=2 即重叠，画黄色）
+//    PatRole = 唯一覆盖时的角色（1=主体段 / 2=回调段或被忽略的小实体）
+int PatHits[];
+int PatRole[];
 
 //--- 数据完整性状态位
 //    true = 上一次计算时任一数据依赖（MACD/Stoch/RSI/ATR）未就绪，历史区被跳过；
@@ -339,12 +346,14 @@ int OnInit()
    PlotIndexSetInteger(5, PLOT_LINE_STYLE, InpPLOpenStyle);
    PlotIndexSetDouble (5, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   //--- 模块8：形态识别 plot 属性（3 个颜色槽：0=主体阳线 / 1=主体阴线 / 2=回调与小实体）
+   //--- 模块8：形态识别 plot 属性（4 个颜色槽：0=主体阳线 / 1=主体阴线 /
+   //    2=回调与小实体 / 3=形态重叠）
    PlotIndexSetInteger(6, PLOT_DRAW_TYPE, InpPatEnabled ? DRAW_COLOR_CANDLES : DRAW_NONE);
-   PlotIndexSetInteger(6, PLOT_COLOR_INDEXES, 3);
+   PlotIndexSetInteger(6, PLOT_COLOR_INDEXES, 4);
    PlotIndexSetInteger(6, PLOT_LINE_COLOR, 0, InpPatBullColor);
    PlotIndexSetInteger(6, PLOT_LINE_COLOR, 1, InpPatBearColor);
    PlotIndexSetInteger(6, PLOT_LINE_COLOR, 2, InpPatMidColor);
+   PlotIndexSetInteger(6, PLOT_LINE_COLOR, 3, InpPatOverlapColor);
    PlotIndexSetDouble (6, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
    //--- 预热bar数：只计入「已启用」的模块所需的最长预热区（与 OnCalculate 同一函数）
@@ -352,7 +361,7 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.35");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.36");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -579,6 +588,22 @@ int OnCalculate(const int rates_total,
    bool full  = (g_needFull || prev_calculated <= 0 || prev_calculated > rates_total);
    int  start = full ? 0 : prev_calculated - 1;
 
+   //--- 形态重叠统计数组：尺寸对齐。已有部分必须保留（每根bar只在收盘时计一次），
+   //    仅对【新增的尾部】清零，否则每次新bar都会丢掉历史计数
+   if(ArraySize(PatHits) != rates_total)
+     {
+      int oldSize = ArraySize(PatHits);
+      ArrayResize(PatHits, rates_total);
+      ArrayResize(PatRole, rates_total);
+      if(oldSize > rates_total)
+         oldSize = 0;                          // 历史被截断：整体清零
+      for(int i = oldSize; i < rates_total; i++)
+        {
+         PatHits[i] = 0;
+         PatRole[i] = 0;
+        }
+     }
+
    //--- 缓冲区清空：纯数组写入，代价极低，必须先于任何分类逻辑
    for(int i = start; i < rates_total; i++)
      {
@@ -592,6 +617,8 @@ int OnCalculate(const int rates_total,
       PatLow[i]   = EMPTY_VALUE;
       PatClose[i] = EMPTY_VALUE;
       PatColor[i] = 0;
+      PatHits[i]  = 0;      // 与缓冲区同步清零：本行起的数据将被重新判定
+      PatRole[i]  = 0;
       BufBuy[i]   = EMPTY_VALUE;
       BufSell[i]  = EMPTY_VALUE;
      }
@@ -629,11 +656,14 @@ int OnCalculate(const int rates_total,
            }
         }
 
-   //--- 5-2 形态识别（模块8）：命中后对「整段」着色（含段内被忽略的小实体K线）
-   //    段起点可能早于本轮增量起点 start，故不裁剪（越界由 MatchEndingAt 保证 >=0）
-   //    三段分色：主体段按方向（阳绿/阴红），回调段与小实体统一灰色，
-   //    使「涨-回调-涨」= 绿绿灰灰绿绿，形态含义一眼可辨
+   //--- 5-2 形态识别（模块8）：两阶段
+   //    ① 统计「每根bar被多少个形态覆盖」——重叠部分（涨的末端同时是跌的开端等）
+   //    ② 统一着色：覆盖1次 -> 主体段按方向(阳绿/阴红) / 回调与小实体灰色
+   //                  覆盖>=2   -> 黄色（重叠，含义不确定）
    if(g_pat.Enabled())
+     {
+      int paintFrom = rates_total;         // 本轮需要重画的最小下标
+
       for(int i = start; i < rates_total; i++)
         {
          if(InpPatOnlyClosed && i == rates_total - 1)   // 未收盘bar不确认，防重绘
@@ -644,33 +674,43 @@ int OnCalculate(const int rates_total,
             continue;
 
          int kFrom = (segStart > 0) ? segStart : 0;
+         if(kFrom < paintFrom)
+            paintFrom = kFrom;
+
+         //--- 计数：每根bar被几个形态覆盖；首次覆盖时记录其在形态中的角色
          for(int k = kFrom; k <= i; k++)
            {
-            //--- 颜色判定：小实体/十字星 或 回调段内 -> 灰(2)；主体段 -> 阳绿(0)/阴红(1)
-            int cidx;
-            if(g_pat.IsIgnoredBar(k, open, close) || (k >= midFrom && k <= midTo))
-               cidx = 2;
-            else
-               cidx = g_pat.ColorIndexOf(k, open, close);
-
-            //--- 去重：已按「同色 + 同收盘价」画过则跳过
-            if(PatClose[k] == close[k])
-              {
-               if(PatColor[k] == cidx)
-                  continue;
-               //--- 灰色是弱色：不覆盖已着色的主体段（两段反向形态叠加时，
-               //    主体段优先保留，避免把已画好的绿/红改成灰）
-               if(cidx == 2)
-                  continue;
-              }
-
-            PatOpen[k]  = open[k];
-            PatHigh[k]  = high[k];
-            PatLow[k]   = low[k];
-            PatClose[k] = close[k];
-            PatColor[k] = cidx;
+            PatHits[k]++;
+            if(PatHits[k] == 1)
+               PatRole[k] = (g_pat.IsIgnoredBar(k, open, close) || (k >= midFrom && k <= midTo)) ? 2 : 1;
            }
         }
+
+      //--- 着色（paintFrom 可能早于增量起点，用于把旧bg升级成黄色重叠）
+      for(int k = paintFrom; k < rates_total; k++)
+        {
+         int hits = PatHits[k];
+         if(hits <= 0)
+            continue;
+
+         int cidx;
+         if(hits >= 2)
+            cidx = 3;                                   // 重叠 -> 黄
+         else if(PatRole[k] == 2)
+            cidx = 2;                                   // 回调段 / 小实体 -> 灰
+         else
+            cidx = g_pat.ColorIndexOf(k, open, close);  // 主体段 -> 阳绿 / 阴红
+
+         if(PatClose[k] == close[k] && PatColor[k] == cidx)
+            continue;                                   // 已是该色，不重复落笔
+
+         PatOpen[k]  = open[k];
+         PatHigh[k]  = high[k];
+         PatLow[k]   = low[k];
+         PatClose[k] = close[k];
+         PatColor[k] = cidx;
+        }
+     }
 
    //--- 5-3 信号层：依赖模块已由 dataOk 保证就绪，循环内按「当前模式」取数
    //--- 历史不足的bar不出信号（K线着色/形态不受此限制）
