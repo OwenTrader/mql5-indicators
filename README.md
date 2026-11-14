@@ -14,7 +14,7 @@ mql5_skeleton/
 │   ├── RsiFilter.mqh   ← 模块4b：RSI 方向过滤（可选，顺势确认）｜默认关
 │   ├── OscSignal.mqh   ← 模块5：震荡触发（Stoch 超买超卖穿越）｜默认关
 │   ├── BigCandles.mqh  ← 模块6：K线着色（大实体/大影线 6 色 + ATR 自适应）｜默认关
-│   ├── TrendMA.mqh     ← 模块7：双均线趋势（13/30 EMA 方向过滤，不画线）｜默认开
+│   ├── TrendMA.mqh     ← 模块7：双均线（13/30 EMA，画线 + 方向过滤）｜默认开
 │   └── PatternSig.mqh  ← 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）｜默认关
 └── README.md
 ```
@@ -48,7 +48,7 @@ mql5_skeleton/
 | 模块4b RSI过滤 | UseRSI/RSIPeriod/RSILevel | **独立开关**（UseRSI，默认**关**）；是否叠加 RSI 顺势过滤、周期(14)、多空分界(50)。依赖模块4，模块4关闭时本项不生效 |
 | 模块5 震荡 | **Enabled**/K/D/Slowing/阈值 | **独立开关（v1.38 起默认关闭）**；Stochastic参数与超买超卖阈值。关闭时不创建句柄（零开销），依赖震荡触发的 MODE_FILTER / MODE_ANY 不再出信号 |
 | 模块6 K线着色 | Enabled/**HideNormal**/**UseATR**/六色/ATR倍数与周期/各周期点数阈值(回退)/影线/预警 | **独立开关（v1.29 起默认关闭，InpCandleEnabled=false）**；6色K线分类、ATR自适应阈值（由 candle.mq5 提炼，plot0=DRAW_COLOR_CANDLES）。**HideNormal 默认开启 = 不绘制普通K线**，仅高亮特殊K线，普通K线交由图表原生绘制；**UseATR 默认开启**：大实体阈值 = `ATR × 倍数(默认1.5)`，ATR 未就绪时回退到「各周期最小实体点数」表 |
-| 模块7 双均线 | Enabled/Fast/Slow/Method/Price | **默认开启，13 EMA / 30 EMA**（`InpMaEnabled=true`，`InpMaFast=13`，`InpMaSlow=30`，`MODE_EMA`）；作用为**方向过滤**：任何模式产出的信号都必须与双均线方向一致，否则丢弃。**该模块不绘制均线**（无独立 plot），关闭时不创建句柄、零开销 |
+| 模块7 双均线 | Enabled/Fast/Slow/Method/Price/**颜色/线型/粗细** | **默认开启，13 EMA / 30 EMA**（`MODE_EMA`、`PRICE_CLOSE`）。两个作用：① **画线**——plot7/plot8 输出快线与慢线，颜色/线型/粗细（1-5）可分别调整，关闭时 plot 置 `DRAW_NONE`；② **方向过滤**——任何模式产出的信号必须与双均线方向一致，否则丢弃。数据经 `Prepare()` 批量增量预取，过滤只查表 |
 | 模块8 形态识别 | Enabled/X/Y/Z/MinBody/AllowLonger/OnlyClosed/**MaxBars**/四色 | **独立开关（v1.38 起默认关闭）**；命中 `x根阳 + 1..y根阴 + z根阳`（或镜像）后对整段着色，plot6=`DRAW_COLOR_CANDLES`，涨形态绿 / 跌形态红 / 回调灰 / 重叠黄。**x/z 必须 >= 2，y 为上限**。小实体（实体 < `MinBody` 点）**不计数、不打断**。只处理最近 `MaxBars`(默认2000) 根。规则见下方说明 |
 
 调好一组参数后：图表右键 → 指标列表 → 保存为 **.set 预设文件**，之后一键切换。
@@ -143,8 +143,8 @@ mql5_skeleton/
 >   信号合成中该模块输出恒为 0，只让依赖它的模式失效（关模块5 → MODE_FILTER/MODE_ANY 无信号；关模块4 → MODE_MACD/FILTER/MOMENTUM 无信号）。
 > - **着色类（模块6 / 8）**：不判定、不写缓冲区；模块8 的计数数组 `PatHits/PatRole` 也不再分配。
 > - **显示类（模块1 / 2 / 3）**：不创建图形对象、不刷新，`Release()` 会清掉已建对象。
-> - **关不掉的部分**：MT5 按 `indicator_buffers`（本指标 15 个）为**全部历史**预分配 double 绘图缓冲，
->   约 **120 字节/bar**，与开关无关（100 万根 M1 ≈ 120MB）。想彻底省掉只能把对应 plot 拆成独立子指标。
+> - **关不掉的部分**：MT5 按 `indicator_buffers`（本指标 17 个）为**全部历史**预分配 double 绘图缓冲，
+>   约 **136 字节/bar**，与开关无关（100 万根 M1 ≈ 136MB）。想彻底省掉只能把对应 plot 拆成独立子指标。
 > - 预热 bar 数 `minBars` 只按「已启用」的模块累加，禁用模块不占预热位。
 
 ---
@@ -244,7 +244,7 @@ CopyBuffer(h, 0, start, 2, v);   // v[0]=index-1, v[1]=index（旧→新）
 - **MODE_MOMENTUM**：`MomentumCross()` 成立 → 买/卖（默认 加速6根 / 减速1根 / 回看50根）；
   勾选 `InpMacdUseRSI` 时叠加顺势过滤：做多要求 RSI ≥ 50，做空要求 RSI < 50（默认关闭）
 - **MODE_ANY**：仅看 Stoch 触发（测试用）
-- **模块7 双均线**（默认开启 13/30 EMA）：叠加方向过滤 —— 最终信号必须与双均线方向一致，否则丢弃；**不画均线**，只在有候选信号时取值
+- **模块7 双均线**（默认开启 13/30 EMA）：图上绘制快/慢两条线（颜色、线型、粗细可调），同时作为方向过滤 —— 最终信号必须与双均线方向一致，否则丢弃
 - 信号画在触发bar上：绿色↑ = Buy，红色↓ = Sell
 
 > **箭头落在哪根 bar**：`InpOnlyClosed=true`（默认）时只在 K 线**收盘后**判定，

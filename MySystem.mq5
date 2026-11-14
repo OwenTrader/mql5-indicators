@@ -15,13 +15,13 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.40"
+#property version     "1.41"
 #property description "模块化交易系统骨架：主指标聚合器"
-#property description "默认开启：网格线(整数/四分位/中位/八分位) + 价格折线(高/低/开) + K线倒计时"
-#property description "默认关闭：MACD二线交叉 / 震荡触发 / MACD动量 / 双均线过滤 / K线着色 / 形态识别"
+#property description "默认开启：网格线 + 价格折线(高/低/开) + K线倒计时 + 双均线(13/30 EMA，含画线)"
+#property description "默认关闭：MACD二线交叉 / 震荡触发 / MACD动量 / K线着色 / 形态识别"
 #property indicator_chart_window
-#property indicator_buffers 15
-#property indicator_plots   7
+#property indicator_buffers 17
+#property indicator_plots   9
 
 #property indicator_label1  "Candles"
 #property indicator_type1   DRAW_COLOR_CANDLES
@@ -57,6 +57,17 @@
 #property indicator_label7  "Pattern"
 #property indicator_type7   DRAW_COLOR_CANDLES
 #property indicator_color7  clrLime,clrRed,clrGray,clrYellow
+
+//--- 模块7：双均线（关闭时 OnInit 里改写为 DRAW_NONE）
+#property indicator_label8  "MA Fast"
+#property indicator_type8   DRAW_LINE
+#property indicator_color8  clrDodgerBlue
+#property indicator_width8  2
+
+#property indicator_label9  "MA Slow"
+#property indicator_type9   DRAW_LINE
+#property indicator_color9  clrOrangeRed
+#property indicator_width9  2
 
 #include "Modules\MacdTrend.mqh"
 #include "Modules\OscSignal.mqh"
@@ -203,6 +214,12 @@ input int                InpMaFast    = 13;             // 快线周期(默认13
 input int                InpMaSlow    = 30;             // 慢线周期(默认30 EMA)
 input ENUM_MA_METHOD     InpMaMethod  = MODE_EMA;       // 均线算法
 input ENUM_APPLIED_PRICE InpMaPrice   = PRICE_CLOSE;    // 应用价格
+input color              InpMaFastColor = clrDodgerBlue;// 快线颜色
+input ENUM_LINE_STYLE    InpMaFastStyle = STYLE_SOLID;  // 快线线型
+input int                InpMaFastWidth = 2;            // 快线粗细(1-5)
+input color              InpMaSlowColor = clrOrangeRed; // 慢线颜色
+input ENUM_LINE_STYLE    InpMaSlowStyle = STYLE_SOLID;  // 慢线线型
+input int                InpMaSlowWidth = 2;            // 慢线粗细(1-5)
 
 input group "══════ 模块8：形态识别(默认关闭) ══════"
 input bool   InpPatEnabled   = false;            // 启用形态识别
@@ -249,6 +266,10 @@ double PatHigh[];
 double PatLow[];
 double PatClose[];
 double PatColor[];        // 0=主体阳线 / 1=主体阴线 / 2=回调与小实体 / 3=形态重叠
+
+//--- 模块7：双均线绘图缓冲区（plot 7/8）
+double MaFastBuf[];
+double MaSlowBuf[];
 
 //--- 模块8：重叠统计（非缓冲区，仅覆盖最近 InpPatMaxBars 根窗口）
 //    PatHits = 该bar被多少个形态覆盖（>=2 即重叠，画黄色）
@@ -315,6 +336,10 @@ int OnInit()
    SetIndexBuffer(13, PatClose, INDICATOR_DATA);
    SetIndexBuffer(14, PatColor, INDICATOR_COLOR_INDEX);
 
+   //--- 模块7：双均线缓冲区（plot 7/8）
+   SetIndexBuffer(15, MaFastBuf, INDICATOR_DATA);
+   SetIndexBuffer(16, MaSlowBuf, INDICATOR_DATA);
+
    //--- K线着色 plot 属性：6 个颜色槽由模块参数驱动
    PlotIndexSetInteger(0, PLOT_COLOR_INDEXES, 6);
    PlotIndexSetInteger(0, PLOT_LINE_COLOR, 0, InpCdlBullBody);
@@ -361,12 +386,25 @@ int OnInit()
    PlotIndexSetInteger(6, PLOT_LINE_COLOR, 3, InpPatOverlapColor);
    PlotIndexSetDouble (6, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
+   //--- 模块7：双均线 plot 属性（开关/颜色/线型/粗细；关闭时 DRAW_NONE）
+   PlotIndexSetInteger(7, PLOT_DRAW_TYPE, InpMaEnabled ? DRAW_LINE : DRAW_NONE);
+   PlotIndexSetInteger(7, PLOT_LINE_COLOR, InpMaFastColor);
+   PlotIndexSetInteger(7, PLOT_LINE_STYLE, InpMaFastStyle);
+   PlotIndexSetInteger(7, PLOT_LINE_WIDTH, InpMaFastWidth);
+   PlotIndexSetDouble (7, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+
+   PlotIndexSetInteger(8, PLOT_DRAW_TYPE, InpMaEnabled ? DRAW_LINE : DRAW_NONE);
+   PlotIndexSetInteger(8, PLOT_LINE_COLOR, InpMaSlowColor);
+   PlotIndexSetInteger(8, PLOT_LINE_STYLE, InpMaSlowStyle);
+   PlotIndexSetInteger(8, PLOT_LINE_WIDTH, InpMaSlowWidth);
+   PlotIndexSetDouble (8, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+
    //--- 预热bar数：只计入「已启用」的模块所需的最长预热区（与 OnCalculate 同一函数）
    int minBars = WarmupBars();
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.40");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.41");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -581,13 +619,17 @@ int OnCalculate(const int rates_total,
    if(InpMacdEnabled && InpMacdUseRSI)                                       // 模块4b：RSI
       rsiOk = g_rsi.Prepare(rates_total, prevForModules);
 
+   bool maOk = true;
+   if(InpMaEnabled)                                                          // 模块7：双均线
+      maOk = g_ma.Prepare(rates_total, prevForModules);
+
    //--- 当前信号模式真正依赖哪些模块（依赖项未就绪 => 本轮不出信号，等下一轮补算）
    bool macdReq = InpMacdEnabled && (InpMode == MODE_MACD || InpMode == MODE_FILTER || InpMode == MODE_MOMENTUM);
    bool oscReq  = InpOscEnabled  && (InpMode == MODE_FILTER || InpMode == MODE_ANY);
    bool rsiReq  = InpMacdEnabled && InpMacdUseRSI && InpMode == MODE_MOMENTUM;
 
    bool depsOk = (!macdReq || macdOk) && (!oscReq || oscOk) && (!rsiReq || rsiOk);
-   bool dataOk = depsOk && cdlOk;
+   bool dataOk = depsOk && cdlOk && maOk;
 
    //--- 计算起点：需要全量重算时从 0 开始（g_needFull 保证历史不被漏算）
    bool full  = (g_needFull || prev_calculated <= 0 || prev_calculated > rates_total);
@@ -608,6 +650,8 @@ int OnCalculate(const int rates_total,
       PatColor[i] = 0;
       BufBuy[i]   = EMPTY_VALUE;
       BufSell[i]  = EMPTY_VALUE;
+      MaFastBuf[i] = EMPTY_VALUE;   // 均线：每根bar重写，未就绪保持空
+      MaSlowBuf[i] = EMPTY_VALUE;
      }
 
    //--- 模块2：价格折线（高/低/开）—— 仅依赖价格序列，无条件刷新
@@ -641,6 +685,19 @@ int OnCalculate(const int rates_total,
             CandleClose[i] = close[i];
             CandleColor[i] = cidx;
            }
+        }
+
+   //--- 模块7：双均线绘制（plot 7/8；关闭时 plot 已为 DRAW_NONE）
+   //    数据由 Prepare() 批量预取，这里只做查表搬运，无 API 调用
+   if(InpMaEnabled)
+      for(int i = start; i < rates_total; i++)
+        {
+         double vFast = g_ma.FastAt(i);
+         double vSlow = g_ma.SlowAt(i);
+         if(vFast > 0.0)
+            MaFastBuf[i] = vFast;
+         if(vSlow > 0.0)
+            MaSlowBuf[i] = vSlow;
         }
 
    //--- 5-2 形态识别（模块8）：两阶段，仅处理最近 InpPatMaxBars 根窗口
@@ -842,7 +899,7 @@ int OnCalculate(const int rates_total,
       //    只有已出现候选信号时才去取均线值，避免全历史逐bar取数（性能）
       if(InpMaEnabled && (buy || sell))
         {
-         int maState = g_ma.TrendState(i, rates_total);
+         int maState = g_ma.TrendState(i);
          if(buy  && maState < 0)   // 双均线空头：丢弃做多候选
             buy = false;
          if(sell && maState > 0)   // 双均线多头：丢弃做空候选

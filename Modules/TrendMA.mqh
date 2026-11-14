@@ -1,11 +1,17 @@
 ﻿//+------------------------------------------------------------------+
 //|                                                     TrendMA.mqh  |
-//|  模块4：趋势模块（双均线多空状态过滤）                             |
-//|  示例模块 —— 把你自己的趋势判断逻辑替换进 TrendState() 即可        |
+//|  模块7：双均线（方向过滤 + 两条均线绘制）                            |
+//|                                                                  |
+//|  v1.41 变更：                                                     |
+//|   · 新增 Prepare() 批量增量预取 fast/slow 两条序列（原实现每个候选     |
+//|     信号都要两次 CopyBuffer，且数值无法用于绘图）                     |
+//|   · 新增 FastAt()/SlowAt()，供主指标写入均线绘图缓冲区（plot 7/8）     |
+//|   · TrendState() 改为纯查表，不再调用任何 API                        |
 //|                                                                  |
 //|  设计约定：                                                       |
-//|  · 模块内不定义 input，参数由主指标通过 struct 传入（防参数爆炸）   |
-//|  · 模块自管句柄的创建与释放，主指标只管 Create/调用/整体释放        |
+//|  · 模块内不定义 input，参数由主指标通过 struct 传入（防参数爆炸）     |
+//|  · 模块自管句柄的创建与释放，主指标只管 Create/调用/整体释放          |
+//|  · 绘图缓冲区归主指标所有，模块只提供数值                            |
 //+------------------------------------------------------------------+
 #ifndef __TREND_MA_MQH__
 #define __TREND_MA_MQH__
@@ -20,7 +26,7 @@ struct TrendSettings
   };
 
 //+------------------------------------------------------------------+
-//| 趋势模块类                                                        |
+//| 双均线模块类                                                      |
 //+------------------------------------------------------------------+
 class CTrendModule
   {
@@ -28,15 +34,68 @@ private:
    TrendSettings      m_cfg;
    int                m_hFast;
    int                m_hSlow;
+   double             m_fast[];     // 快线序列（索引0=最老，与主循环同序）
+   double             m_slow[];     // 慢线序列
+   double             m_tmpF[];     // 拷贝中转（非指标缓冲区禁止直接部分拷贝）
+   double             m_tmpS[];
+   int                m_validFrom;  // 首个两线都有效的图表索引
+
+   //--- 单条均线的增量取数：返回实际拷贝根数（0=失败）
+   int                FillSeries(const int handle,const int rates_total,const int prev_calculated,
+                                 double &dst[],double &tmp[])
+     {
+      if(handle == INVALID_HANDLE)
+         return(0);
+
+      int prev = prev_calculated;
+      if(ArraySize(dst) != rates_total)
+        {
+         ArrayResize(dst, rates_total);
+         prev = 0;                       // 尺寸变化 => 内容失效，整体重取
+        }
+
+      int need;
+      if(prev <= 0 || prev > rates_total)
+         need = rates_total;
+      else
+        {
+         need = rates_total - prev + 1;
+         if(need < 1)
+            need = 1;
+        }
+
+      ArrayFree(tmp);
+      int copied = CopyBuffer(handle, 0, 0, need, tmp);
+      if(copied <= 0)
+         return(0);
+
+      int off = rates_total - copied;
+      if(off < 0)
+         return(0);
+      for(int k = 0; k < copied; k++)
+         dst[off + k] = tmp[k];
+
+      return(copied);
+     }
 
 public:
-                     CTrendModule(void) : m_hFast(INVALID_HANDLE), m_hSlow(INVALID_HANDLE) {}
+                     CTrendModule(void) : m_hFast(INVALID_HANDLE), m_hSlow(INVALID_HANDLE),
+                                          m_validFrom(0) {}
                     ~CTrendModule(void) { Release(); }
 
    //--- 初始化：创建内部指标句柄
    bool               Create(const string symbol,const ENUM_TIMEFRAMES tf,const TrendSettings &cfg)
      {
-      m_cfg   = cfg;
+      m_cfg = cfg;
+      if(cfg.FastPeriod < 1 || cfg.SlowPeriod < 1)
+        {
+         Print(__FUNCTION__, ": 均线周期非法");
+         return(false);
+        }
+      if(cfg.FastPeriod >= cfg.SlowPeriod)
+         Print(__FUNCTION__, ": 提示 快线周期(", cfg.FastPeriod, ") >= 慢线周期(", cfg.SlowPeriod,
+               ")，方向过滤意义有限");
+
       m_hFast = iMA(symbol, tf, cfg.FastPeriod, 0, cfg.Method, cfg.Price);
       m_hSlow = iMA(symbol, tf, cfg.SlowPeriod, 0, cfg.Method, cfg.Price);
       if(m_hFast == INVALID_HANDLE || m_hSlow == INVALID_HANDLE)
@@ -54,25 +113,47 @@ public:
       if(m_hSlow != INVALID_HANDLE) { IndicatorRelease(m_hSlow); m_hSlow = INVALID_HANDLE; }
      }
 
-   //--- 核心逻辑：返回 +1(多头) / -1(空头) / 0(数据未就绪)
-   //    index = 主指标OnCalculate中正在计算的bar（非序列索引）
-   int                TrendState(const int index,const int rates_total)
+   bool               Enabled(void) const { return(m_hFast != INVALID_HANDLE && m_hSlow != INVALID_HANDLE); }
+
+   //--- 批量增量预取两条均线（返回 false = 本轮数据不足）
+   bool               Prepare(const int rates_total,const int prev_calculated)
      {
-      double fast[2], slow[2];
-      int start = rates_total - 1 - index;   // index 距最新bar的年龄
-      if(start < 0)
+      if(m_hFast == INVALID_HANDLE || m_hSlow == INVALID_HANDLE)
+         return(false);
+
+      int cf = FillSeries(m_hFast, rates_total, prev_calculated, m_fast, m_tmpF);
+      if(cf <= 0)
+         return(false);
+      int cs = FillSeries(m_hSlow, rates_total, prev_calculated, m_slow, m_tmpS);
+      if(cs <= 0)
+         return(false);
+
+      m_validFrom = rates_total - MathMin(cf, cs);
+      return(true);
+     }
+
+   //--- 方向状态：+1 多头 / -1 空头 / 0 未就绪（纯查表，无 API 调用）
+   int                TrendState(const int index)
+     {
+      if(index < 0 || index < m_validFrom)
          return(0);
-      //--- CopyBuffer 固定按"旧->新"排列：fast[0]=index-1, fast[1]=index
-      if(CopyBuffer(m_hFast, 0, start, 2, fast) < 2)
+      if(index >= ArraySize(m_fast) || index >= ArraySize(m_slow))
          return(0);
-      if(CopyBuffer(m_hSlow, 0, start, 2, slow) < 2)
-         return(0);
-      //--- 扩展点：可在此加入均线斜率、ATR过滤、多周期共振等你的逻辑
-      if(fast[1] > slow[1])
+      if(m_fast[index] > m_slow[index])
          return(1);
-      if(fast[1] < slow[1])
+      if(m_fast[index] < m_slow[index])
          return(-1);
       return(0);
+     }
+
+   //--- 只读访问（供主指标写绘图缓冲区）：未就绪返回 0
+   double             FastAt(const int index)
+     {
+      return(index >= m_validFrom && index < ArraySize(m_fast)) ? m_fast[index] : 0.0;
+     }
+   double             SlowAt(const int index)
+     {
+      return(index >= m_validFrom && index < ArraySize(m_slow)) ? m_slow[index] : 0.0;
      }
   };
 
