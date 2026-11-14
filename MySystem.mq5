@@ -563,8 +563,8 @@ int OnInit()
             " —— 倒计时将退化为仅随 tick 刷新");
 
    //--- 模块7 自检日志（排查「均线不显示」时先看这里）
-   PrintFormat("MySystem v%s 初始化: 均线开关=%s 周期=%d/%d %s 应用价=%s；plot7/8=%s",
-               "1.42", InpMaEnabled ? "开" : "关", InpMaFast, InpMaSlow,
+   PrintFormat("MySystem v%s init: MA=%s period=%d/%d %s applied=%s plot7/8=%s",
+               "1.42", InpMaEnabled ? "ON" : "OFF", InpMaFast, InpMaSlow,
                EnumToString(InpMaMethod), EnumToString(InpMaPrice),
                InpMaEnabled ? "DRAW_LINE" : "DRAW_NONE");
 

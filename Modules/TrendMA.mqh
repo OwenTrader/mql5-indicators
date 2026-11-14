@@ -152,7 +152,7 @@ public:
       if(!m_logged)
         {
          m_logged = true;
-         PrintFormat("TrendMA: 首次就绪 fast=%d/%d slow=%d/%d 有效起点=%d (rates_total=%d)",
+         PrintFormat("TrendMA: first ready fast=%d/%d slow=%d/%d validFrom=%d (rates_total=%d)",
                      m_cfg.FastPeriod, cf, m_cfg.SlowPeriod, cs, m_validFrom, rates_total);
         }
       return(true);
