@@ -15,7 +15,7 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.34"
+#property version     "1.35"
 #property description "模块化交易系统骨架：主指标聚合器"
 #property description "主信号：MACD二线交叉(DIF上穿/下穿DEA，与 iMACD / 2linemacd 同口径) + 形态识别 + 网格线 + 倒计时 + 价格折线(高/低/开)"
 #property description "备选：震荡(Stoch)触发 / MACD柱动量耗尽确认 / 双均线过滤 / K线着色(均默认关闭)"
@@ -56,7 +56,7 @@
 //--- 模块8：形态识别（默认类型；关闭时 OnInit 里会改写为 DRAW_NONE）
 #property indicator_label7  "Pattern"
 #property indicator_type7   DRAW_COLOR_CANDLES
-#property indicator_color7  clrLime,clrRed
+#property indicator_color7  clrLime,clrRed,clrGray
 
 #include "Modules\MacdTrend.mqh"
 #include "Modules\OscSignal.mqh"
@@ -210,8 +210,9 @@ input int    InpPatZ         = 2;               // 第三段连续根数 z (>=2)
 input int    InpPatMinBody   = 22;              // 小实体忽略阈值(点，小于此值不计数)
 input bool   InpPatAllowLonger = false;         // 允许 x/z 段长于设定根数(整段着色)
 input bool   InpPatOnlyClosed  = true;          // 仅收盘bar确认(防重绘)
-input color  InpPatBullColor = clrLime;         // 阳线颜色(形态段内)
-input color  InpPatBearColor = clrRed;          // 阴线颜色(形态段内，含回调的中间段)
+input color  InpPatBullColor = clrLime;         // 主体段阳线颜色(默认绿)
+input color  InpPatBearColor = clrRed;          // 主体段阴线颜色(默认红)
+input color  InpPatMidColor  = clrGray;         // 回调段/小实体颜色(默认灰)
 
 //--- 模块实例（全局单例）
 CMacdModule      g_macd;
@@ -338,11 +339,12 @@ int OnInit()
    PlotIndexSetInteger(5, PLOT_LINE_STYLE, InpPLOpenStyle);
    PlotIndexSetDouble (5, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   //--- 模块8：形态识别 plot 属性（2 个颜色槽：0=上涨形态 / 1=下跌形态）
+   //--- 模块8：形态识别 plot 属性（3 个颜色槽：0=主体阳线 / 1=主体阴线 / 2=回调与小实体）
    PlotIndexSetInteger(6, PLOT_DRAW_TYPE, InpPatEnabled ? DRAW_COLOR_CANDLES : DRAW_NONE);
-   PlotIndexSetInteger(6, PLOT_COLOR_INDEXES, 2);
+   PlotIndexSetInteger(6, PLOT_COLOR_INDEXES, 3);
    PlotIndexSetInteger(6, PLOT_LINE_COLOR, 0, InpPatBullColor);
    PlotIndexSetInteger(6, PLOT_LINE_COLOR, 1, InpPatBearColor);
+   PlotIndexSetInteger(6, PLOT_LINE_COLOR, 2, InpPatMidColor);
    PlotIndexSetDouble (6, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
    //--- 预热bar数：只计入「已启用」的模块所需的最长预热区（与 OnCalculate 同一函数）
@@ -350,7 +352,7 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.34");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.35");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -629,27 +631,38 @@ int OnCalculate(const int rates_total,
 
    //--- 5-2 形态识别（模块8）：命中后对「整段」着色（含段内被忽略的小实体K线）
    //    段起点可能早于本轮增量起点 start，故不裁剪（越界由 MatchEndingAt 保证 >=0）
-   //    着色按【单根方向】而非整段同色：阳=绿 / 阴=红，
-   //    于是 涨-回调-涨 = 绿绿红红绿绿，中间的阴线保持红色；镜像同理
+   //    三段分色：主体段按方向（阳绿/阴红），回调段与小实体统一灰色，
+   //    使「涨-回调-涨」= 绿绿灰灰绿绿，形态含义一眼可辨
    if(g_pat.Enabled())
       for(int i = start; i < rates_total; i++)
         {
          if(InpPatOnlyClosed && i == rates_total - 1)   // 未收盘bar不确认，防重绘
             continue;
 
-         int segStart = i;
-         if(g_pat.MatchEndingAt(i, open, close, segStart) == 0)
+         int segStart = i, midFrom = i, midTo = i - 1;
+         if(g_pat.MatchEndingAt(i, open, close, segStart, midFrom, midTo) == 0)
             continue;
 
          int kFrom = (segStart > 0) ? segStart : 0;
          for(int k = kFrom; k <= i; k++)
            {
-            int cidx = g_pat.ColorIndexOf(k, open, close);
+            //--- 颜色判定：小实体/十字星 或 回调段内 -> 灰(2)；主体段 -> 阳绿(0)/阴红(1)
+            int cidx;
+            if(g_pat.IsIgnoredBar(k, open, close) || (k >= midFrom && k <= midTo))
+               cidx = 2;
+            else
+               cidx = g_pat.ColorIndexOf(k, open, close);
 
-            //--- 去重：该bar已是「同色 + 同收盘价」则跳过写入。
-            //    两段形态叠加时重叠部分只落笔一次，避免重复绘制/无谓重绘
-            if(PatColor[k] == cidx && PatClose[k] == close[k])
-               continue;
+            //--- 去重：已按「同色 + 同收盘价」画过则跳过
+            if(PatClose[k] == close[k])
+              {
+               if(PatColor[k] == cidx)
+                  continue;
+               //--- 灰色是弱色：不覆盖已着色的主体段（两段反向形态叠加时，
+               //    主体段优先保留，避免把已画好的绿/红改成灰）
+               if(cidx == 2)
+                  continue;
+              }
 
             PatOpen[k]  = open[k];
             PatHigh[k]  = high[k];

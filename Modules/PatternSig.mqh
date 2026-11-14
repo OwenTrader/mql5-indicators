@@ -19,11 +19,11 @@
 //|     即 阳阳阳阴阴阳阳 不算 阳阳阴阴阳阳（首段 3 根 ≠ 2 根）           |
 //|   · AllowLonger=true：x、z 可「至少」设定值，整段一起着色            |
 //|                                                                  |
-//|  颜色（v1.34）：按【单根K线自身方向】着色，不再整段一色                 |
-//|   · 阳线 = 绿（Plot 颜色索引 0） / 阴线 = 红（索引 1）                  |
-//|   · 于是「涨-回调-涨」= 绿绿红红绿绿，中间的阴线保持红色；               |
-//|     「跌-反弹-跌」= 红红绿绿红红，中间的阳线保持绿色                     |
-//|   · 小实体/十字星虽不参与计数，仍按自身方向着色（平盘归绿）              |
+//|  颜色（v1.35）：三段分色，形态含义一眼可辨                             |
+//|   · 首段 / 末段（形态主体）：按方向 阳=绿(索引0) / 阴=红(索引1)        |
+//|   · 回调段（中段）：统一灰色(索引2)，不区分阴阳                        |
+//|   · 小实体 / 十字星：一律灰色(索引2)，无论处在段内哪个位置              |
+//|   于是「涨-回调-涨」= 绿 绿 灰 灰 绿 绿；「跌-反弹-跌」= 红 红 灰 灰 红 红|
 //|                                                                  |
 //|  去重（避免重复绘制）：                                             |
 //|   · 判定前先做 O(1) 剪枝：末根被忽略(小实体)则不可能有形态以其收尾，直接跳过|
@@ -74,10 +74,14 @@ private:
 
    //--- 从 p 向前数「连续 dir 方向」的计数K线，跳过小实体
    //    结束时 p 停在打断该段的那根计数K线（或 -1 = 序列起点之前）
-   int                CountRun(int &p,const int dir,
-                               const double &open[],const double &close[])
+   //    runFirst / runNewest 输出该段最早 / 最新的一根【计数K线】的索引（-1 = 该段为空）
+   //    这两个边界用于把「回调段」单独框出来着色
+   int                CountRun(int &p,const int dir,const double &open[],const double &close[],
+                               int &runFirst,int &runNewest)
      {
       int cnt = 0;
+      runFirst  = -1;
+      runNewest = -1;
       while(p >= 0)
         {
          int d = DirAt(p, open, close);
@@ -88,6 +92,9 @@ private:
            }
          if(d != dir)
             break;
+         if(runNewest < 0)
+            runNewest = p;                // 首次命中 = 该段最新的一根
+         runFirst = p;                    // 持续更新 = 最终为最早的一根
          cnt++;
          p--;
         }
@@ -95,21 +102,26 @@ private:
      }
 
    //--- 判定「以 i 结尾、末段方向 = dir」的形态
-   //    命中返回 dir，失败返回 0；startBar 输出段起点（含被忽略的小实体）
+   //    命中返回 dir，失败返回 0
+   //    startBar 输出段起点（含被忽略的小实体）
+   //    midFrom / midTo 输出回调段（中段）区间 [midFrom, midTo]，该区间统一画灰色
    int                MatchDir(const int i,const double &open[],const double &close[],
-                               int &startBar,const int dir)
+                               int &startBar,int &midFrom,int &midTo,const int dir)
      {
       int p = i;
+      int lastFirst = -1, lastNewest = -1;
+      int midFirst  = -1, midNewest  = -1;
+      int firstFirst= -1, firstNewest= -1;
 
-      int lastCnt = CountRun(p, dir, open, close);       // 末段：应与 dir 同向（z 根）
+      int lastCnt = CountRun(p, dir, open, close, lastFirst, lastNewest);   // 末段（z 根）
       if(lastCnt < m_cfg.Z)
          return(0);
 
-      int midCnt = CountRun(p, -dir, open, close);       // 中段：反向（1..y 根）
-      if(midCnt < 1 || midCnt > m_cfg.Y)                 // y 是上限：回调 1 根也算命中
+      int midCnt = CountRun(p, -dir, open, close, midFirst, midNewest);     // 中段（1..y 根）
+      if(midCnt < 1 || midCnt > m_cfg.Y)                                   // y 是上限
          return(0);
 
-      int firstCnt = CountRun(p, dir, open, close);      // 首段：同向（x 根）
+      int firstCnt = CountRun(p, dir, open, close, firstFirst, firstNewest); // 首段（x 根）
       if(firstCnt < m_cfg.X)
          return(0);
 
@@ -118,7 +130,9 @@ private:
          (lastCnt != m_cfg.Z || firstCnt != m_cfg.X))
          return(0);
 
-      startBar = p + 1;                                  // p 停在首段之前那根，段起点为其后一根
+      startBar = firstFirst;
+      midFrom  = firstNewest + 1;        // 首段之后（含其间的小实体）开始算回调
+      midTo    = lastFirst - 1;          // 末段首根之前结束
       return(dir);
      }
 
@@ -166,8 +180,14 @@ public:
 
    bool               Enabled(void) const { return(m_cfg.Enabled); }
 
+   //--- 单根K线是否为「被忽略的小实体」（十字星/实体不足阈值）
+   bool               IsIgnoredBar(const int i,const double &open[],const double &close[])
+     {
+      return(DirAt(i, open, close) == 0);
+     }
+
    //--- 段内单根K线的着色索引：0=阳线色(绿) / 1=阴线色(红)
-   //    小实体与十字星同样按自身方向着色（平盘归 0），保持段内视觉连续
+   //    仅用于形态主体（首/末段）；回调段与小实体由主指标统一置灰
    int                ColorIndexOf(const int i,const double &open[],const double &close[]) const
      {
       if(close[i] < open[i])
@@ -177,11 +197,13 @@ public:
 
    //--- 核心：判定以 i 结尾的形态
    //    返回 +1 = 多头形态(涨-跌-涨) / -1 = 空头形态(跌-涨-跌) / 0 = 未命中
-   //    startBar 输出需要着色的段起点（调用方需自行与增量起点取较大值）
+   //    startBar 输出段起点；midFrom/midTo 输出回调段区间（该区间画灰色）
    int                MatchEndingAt(const int i,const double &open[],const double &close[],
-                                    int &startBar)
+                                    int &startBar,int &midFrom,int &midTo)
      {
       startBar = i;
+      midFrom  = i;
+      midTo    = i - 1;                     // 空区间：默认不产生灰色
       if(!m_cfg.Enabled || i < 1 || m_point <= 0.0)
          return(0);
 
@@ -190,10 +212,10 @@ public:
       if(DirAt(i, open, close) == 0)
          return(0);
 
-      int hit = MatchDir(i, open, close, startBar, 1);
+      int hit = MatchDir(i, open, close, startBar, midFrom, midTo, 1);
       if(hit != 0)
          return(hit);
-      return(MatchDir(i, open, close, startBar, -1));
+      return(MatchDir(i, open, close, startBar, midFrom, midTo, -1));
      }
   };
 
