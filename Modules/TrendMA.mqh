@@ -38,7 +38,10 @@ private:
    double             m_slow[];     // 慢线序列
    double             m_tmpF[];     // 拷贝中转（非指标缓冲区禁止直接部分拷贝）
    double             m_tmpS[];
-   int                m_validFrom;  // 首个两线都有效的图表索引
+   int                m_validFrom;  // 【曾】覆盖到的最早有效下标（跨越多轮保留，-1=尚无数据）
+   bool               m_resized;    // 本轮是否因数组重建而整体重取
+   bool               m_needFullFill;// 有一批更早的bar刚变有效 -> 下一轮需整段补画
+   bool               m_logged;     // 首次就绪日志只打一次
 
    //--- 单条均线的增量取数：返回实际拷贝根数（0=失败）
    int                FillSeries(const int handle,const int rates_total,const int prev_calculated,
@@ -52,6 +55,7 @@ private:
         {
          ArrayResize(dst, rates_total);
          prev = 0;                       // 尺寸变化 => 内容失效，整体重取
+         m_resized = true;
         }
 
       int need;
@@ -80,7 +84,7 @@ private:
 
 public:
                      CTrendModule(void) : m_hFast(INVALID_HANDLE), m_hSlow(INVALID_HANDLE),
-                                          m_validFrom(0) {}
+                                          m_validFrom(-1), m_resized(false), m_needFullFill(false), m_logged(false) {}
                     ~CTrendModule(void) { Release(); }
 
    //--- 初始化：创建内部指标句柄
@@ -121,6 +125,8 @@ public:
       if(m_hFast == INVALID_HANDLE || m_hSlow == INVALID_HANDLE)
          return(false);
 
+      m_resized = false;
+
       int cf = FillSeries(m_hFast, rates_total, prev_calculated, m_fast, m_tmpF);
       if(cf <= 0)
          return(false);
@@ -128,8 +134,39 @@ public:
       if(cs <= 0)
          return(false);
 
-      m_validFrom = rates_total - MathMin(cf, cs);
+      //--- ★ 有效区间必须【跨轮累积】：增量轮只拷贝尾部，若每轮都把 validFrom
+      //    重置成 rates_total-1，刚收盘的那根（start=rates_total-2）就会被判为
+      //    无效而跳过写入，表现为均线每隔一根断一次（甚至整条不出现）。
+      int off = rates_total - MathMin(cf, cs);
+      if(m_resized || m_validFrom < 0)
+        {
+         m_validFrom    = off;
+         m_needFullFill = true;         // 数组重建/首次：整段重画
+        }
+      else if(off < m_validFrom)
+        {
+         m_validFrom    = off;          // 历史被补齐：更早的bar现在有效
+         m_needFullFill = true;
+        }
+
+      if(!m_logged)
+        {
+         m_logged = true;
+         PrintFormat("TrendMA: 首次就绪 fast=%d/%d slow=%d/%d 有效起点=%d (rates_total=%d)",
+                     m_cfg.FastPeriod, cf, m_cfg.SlowPeriod, cs, m_validFrom, rates_total);
+        }
       return(true);
+     }
+
+   //--- 曾覆盖到的最早有效下标（-1 = 尚无数据）
+   int                ValidFrom(void) const { return(m_validFrom); }
+
+   //--- 取出并清除「需要整段补画」标志（只生效一次）
+   bool               TakeFullFill(void)
+     {
+      bool need = m_needFullFill;
+      m_needFullFill = false;
+      return(need);
      }
 
    //--- 方向状态：+1 多头 / -1 空头 / 0 未就绪（纯查表，无 API 调用）

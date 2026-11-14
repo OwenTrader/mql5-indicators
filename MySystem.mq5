@@ -15,7 +15,7 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.41"
+#property version     "1.42"
 #property description "模块化交易系统骨架：主指标聚合器"
 #property description "默认开启：网格线 + 价格折线(高/低/开) + K线倒计时 + 双均线(13/30 EMA，含画线)"
 #property description "默认关闭：MACD二线交叉 / 震荡触发 / MACD动量 / K线着色 / 形态识别"
@@ -404,7 +404,7 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.41");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.42");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -562,6 +562,12 @@ int OnInit()
       Print("OnInit: EventSetTimer 失败, err=", GetLastError(),
             " —— 倒计时将退化为仅随 tick 刷新");
 
+   //--- 模块7 自检日志（排查「均线不显示」时先看这里）
+   PrintFormat("MySystem v%s 初始化: 均线开关=%s 周期=%d/%d %s 应用价=%s；plot7/8=%s",
+               "1.42", InpMaEnabled ? "开" : "关", InpMaFast, InpMaSlow,
+               EnumToString(InpMaMethod), EnumToString(InpMaPrice),
+               InpMaEnabled ? "DRAW_LINE" : "DRAW_NONE");
+
    //--- 首次绘制网格线
    g_grid.Update(_Symbol, _Period);
 
@@ -690,7 +696,16 @@ int OnCalculate(const int rates_total,
    //--- 模块7：双均线绘制（plot 7/8；关闭时 plot 已为 DRAW_NONE）
    //    数据由 Prepare() 批量预取，这里只做查表搬运，无 API 调用
    if(InpMaEnabled)
-      for(int i = start; i < rates_total; i++)
+     {
+      //--- 首次 / 数组重建 / 历史被补齐时，从最早有效bar整段补画；
+      //    否则只补增量区间（避免每tick重写全历史）
+      int from = start;
+      if(g_ma.TakeFullFill())
+        {
+         int vf = g_ma.ValidFrom();
+         from = (vf > 0) ? vf : 0;
+        }
+      for(int i = from; i < rates_total; i++)
         {
          double vFast = g_ma.FastAt(i);
          double vSlow = g_ma.SlowAt(i);
@@ -699,6 +714,7 @@ int OnCalculate(const int rates_total,
          if(vSlow > 0.0)
             MaSlowBuf[i] = vSlow;
         }
+     }
 
    //--- 5-2 形态识别（模块8）：两阶段，仅处理最近 InpPatMaxBars 根窗口
    //    ① 统计「每根bar被多少个形态覆盖」——重叠部分（涨的末端同时是跌的开端等）
