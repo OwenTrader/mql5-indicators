@@ -10,6 +10,7 @@ mql5_skeleton/
 │   ├── GridLines.mqh   ← 模块1：网格线（整数位/四分位/中位/八分位+标签+预警）｜默认开
 │   ├── PriceLines.mqh  ← 模块2：价格折线（最高/最低/开盘，可独立开关）｜默认开
 │   ├── Countdown.mqh   ← 模块3：K线倒计时（剩余时间+实时价格）｜默认开
+│   ├── HourSeg.mqh     ← 模块9：H1收盘价水平线段（仅 <30min 周期）｜默认开
 │   ├── MacdTrend.mqh   ← 模块4：MACD 二线交叉（iMACD 口径，同 2linemacd）｜默认关
 │   ├── RsiFilter.mqh   ← 模块4b：RSI 方向过滤（可选，顺势确认）｜默认关
 │   ├── OscSignal.mqh   ← 模块5：震荡触发（Stoch 超买超卖穿越）｜默认关
@@ -50,6 +51,7 @@ mql5_skeleton/
 | 模块6 K线着色 | Enabled/**HideNormal**/**UseATR**/六色/ATR倍数与周期/各周期点数阈值(回退)/影线/预警 | **独立开关（v1.29 起默认关闭，InpCandleEnabled=false）**；6色K线分类、ATR自适应阈值（由 candle.mq5 提炼，plot0=DRAW_COLOR_CANDLES）。**HideNormal 默认开启 = 不绘制普通K线**，仅高亮特殊K线，普通K线交由图表原生绘制；**UseATR 默认开启**：大实体阈值 = `ATR × 倍数(默认1.5)`，ATR 未就绪时回退到「各周期最小实体点数」表 |
 | 模块7 双均线 | Enabled/Fast/Slow/Method/Price/**颜色/线型/粗细** | **默认开启，13 EMA / 30 EMA**（`MODE_EMA`、`PRICE_CLOSE`）。两个作用：① **画线**——plot7/plot8 输出快线与慢线，颜色/线型/粗细（1-5）可分别调整，关闭时缓冲全写 `EMPTY_VALUE`，不绘制；② **方向过滤**——任何模式产出的信号必须与双均线方向一致，否则丢弃。数据经 `Prepare()` 批量增量预取，过滤只查表 |
 | 模块8 形态识别 | Enabled/X/Y/Z/MinBody/AllowLonger/OnlyClosed/**MaxBars**/四色 | **独立开关（v1.38 起默认关闭）**；命中 `x根阳 + 1..y根阴 + z根阳`（或镜像）后对整段着色，plot6=`DRAW_COLOR_CANDLES`，涨形态绿 / 跌形态红 / 回调灰 / 重叠黄。**x/z 必须 >= 2，y 为上限**。小实体（实体 < `MinBody` 点）**不计数、不打断**。只处理最近 `MaxBars`(默认2000) 根。规则见下方说明 |
+| 模块9 H1收盘价水平线 | Enabled/**SpanMinutes**/PerBar/**MaxLines**/颜色/线型/线宽 | **默认开启，但只在周期 < 30min 时生效**（M1/M5/M15/M20；M30 及以上自动清空）。每小时段画一条 `OBJ_TREND` 水平线段：起点 = 该小时首根低周期K线开盘时间，长度 = `SpanMinutes`(默认60) 分钟，价格 = **该小时之前那根已完成 H1 的收盘价**。`PerBar=true` 改为每根K线各画一条。对象前缀 `MSHS_<ChartID>_`，只保留最近 `MaxLines`(默认200) 条 |
 
 调好一组参数后：图表右键 → 指标列表 → 保存为 **.set 预设文件**，之后一键切换。
 
@@ -121,6 +123,16 @@ mql5_skeleton/
 > 正确做法：`#property` 里定死类型，显隐只靠数据 —— 关闭时向缓冲区写 `EMPTY_VALUE`，并把 `PLOT_EMPTY_VALUE` 设为 `EMPTY_VALUE`。
 > 颜色 / 线型 / 线宽 / `PLOT_COLOR_INDEXES` / `PLOT_EMPTY_VALUE` 可以安全地在运行时设置。
 
+> **模块9「H1 收盘价水平线」**（`InpHSEnabled`，**默认开启**，仅 `PeriodSeconds < 1800` 生效）：
+> 每个小时段一条水平线段，起点 = 该小时首根低周期K线的开盘时间（等于对应 H1 的开盘时间），
+> 长度 = `InpHSSpanMin` 分钟（默认 60 = 1 小时；M1 → 60 根、M5 → 12 根、M15 → 4 根），
+> 价格 = **该小时之前**那根已完成 H1 的收盘价。逐小时拼接即形成阶梯状的「前1小时收盘价」参考线。
+> - `InpHSPerBar`（默认 false）：false = 每小时一条（推荐）；true = 每根低周期K线各画一条（对象数 ×60，需配合 `MaxLines` 限制）。
+> - `InpHSMaxLines`（默认 200，0 = 不限）：只保留最近 N 条，N≈200 约合 8 个交易日的每小时线。设为 0 会在 M1 上图对象过万，界面卡顿。
+> - 用 `OBJ_TREND`（两端同价、`RAY_RIGHT=false`）而非指标缓冲区：缓冲区无法表达「只画 1 小时段」。
+> - 对象前缀 `MSHS_<ChartID>_`，套用模板时自动清理非本实例的遗留对象（同模块1/3 的处理）。
+> - 跨休市：线段按**时间坐标**延伸到 起点+SpanMinutes，周五末段会跨过周末空白区，这是时间轴的真实表现。
+
 > **模块8「形态识别」**（`InpPatEnabled`，**默认开启**）：
 > 规则：`x 根连续阳线 + y 根连续阴线 + z 根连续阳线`（涨→回调→涨），或镜像 `x 根阴 + y 根阳 + z 根阴`（跌→反弹→跌）。命中后对**整段**（第一段起点到最后一根）着色，plot6 = `DRAW_COLOR_CANDLES`。
 > - **根数口径**：`InpPatX` / `InpPatZ` **必须 >= 2**（首尾两段是形态主体）；`InpPatY` 是**上限**——`1..y` 根反向K线都算命中，默认 2 时 `阳阴阳` 与 `阳阴阴阳阳` 都触发。
@@ -139,16 +151,17 @@ mql5_skeleton/
 > - **去重**：写缓冲区前比对「同色 + 同收盘价」，同一根bar不重复落笔。
 
 > **模块独立性（每个模块都能独立关闭）**：
-> **默认开启**：模块1 网格线、模块2 价格折线、模块3 倒计时（纯显示，参数组排最前）、模块7 双均线（13/30 EMA，方向过滤）。
+> **默认开启**：模块1 网格线、模块2 价格折线、模块3 倒计时、模块9 H1收盘价水平线（三者纯显示，参数组排最前）、模块7 双均线（13/30 EMA，方向过滤）。
 > **默认关闭**：模块4 MACD、模块4b RSI、模块5 震荡、模块6 K线着色、模块8 形态识别。
 > 开关变量：模块1 `InpGridEnabled`、模块2 `InpPLEnabled`、模块3 `InpCdEnabled`、模块4 `InpMacdEnabled`、
-> 模块4b `InpMacdUseRSI`、模块5 `InpOscEnabled`、模块6 `InpCandleEnabled`、模块7 `InpMaEnabled`、模块8 `InpPatEnabled`。
+> 模块4b `InpMacdUseRSI`、模块5 `InpOscEnabled`、模块6 `InpCandleEnabled`、模块7 `InpMaEnabled`、模块8 `InpPatEnabled`、
+> 模块9 `InpHSEnabled`。
 >
 > 关闭后的开销（**这是"关掉还占不占内存"的准确答案**）：
 > - **信号类（模块4 / 4b / 5 / 7）**：不创建指标句柄、不计算，内部数组不 `ArrayResize` → **真正零开销**；
 >   信号合成中该模块输出恒为 0，只让依赖它的模式失效（关模块5 → MODE_FILTER/MODE_ANY 无信号；关模块4 → MODE_MACD/FILTER/MOMENTUM 无信号）。
 > - **着色类（模块6 / 8）**：不判定、不写缓冲区；模块8 的计数数组 `PatHits/PatRole` 也不再分配。
-> - **显示类（模块1 / 2 / 3）**：不创建图形对象、不刷新，`Release()` 会清掉已建对象。
+> - **显示类（模块1 / 2 / 3 / 9）**：不创建图形对象、不刷新，`Release()` 会清掉已建对象。
 > - **关不掉的部分**：MT5 按 `indicator_buffers`（本指标 17 个）为**全部历史**预分配 double 绘图缓冲，
 >   约 **136 字节/bar**，与开关无关（100 万根 M1 ≈ 136MB）。想彻底省掉只能把对应 plot 拆成独立子指标。
 > - 预热 bar 数 `minBars` 只按「已启用」的模块累加，禁用模块不占预热位。

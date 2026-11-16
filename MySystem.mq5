@@ -15,7 +15,7 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.45"
+#property version     "1.46"
 #property description "模块化交易系统骨架：主指标聚合器"
 #property description "默认开启：网格线 + 价格折线(高/低) + K线倒计时 + 双均线(13/30 EMA，含画线)"
 #property description "默认关闭：MACD二线交叉 / 震荡触发 / MACD动量 / K线着色 / 形态识别"
@@ -78,6 +78,7 @@
 #include "Modules\TrendMA.mqh"    // 模块7：双均线趋势（默认开启，13/30 EMA 方向过滤）
 #include "Modules\PriceLines.mqh" // 模块2：价格折线（高/低/开，三条折线可独立开关）
 #include "Modules\PatternSig.mqh" // 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）
+#include "Modules\HourSeg.mqh"    // 模块9：H1 收盘价水平线段（仅周期 < 30min 生效）
 
 //--- 信号组合模式
 enum ENUM_SIGNAL_MODE
@@ -147,6 +148,15 @@ input int    InpCdXOffset   = 10;          // X轴偏移量(像素)
 input int    InpCdYOffset   = 15;          // Y轴偏移量(像素，越大越往下)
 input bool   InpCdShowPrice = true;        // 显示实时价格
 input string InpCdSeparator = "  |  ";     // 倒计时与价格的分隔符
+
+input group "══════ 模块9：H1收盘价水平线(仅周期<30min生效) ══════"
+input bool            InpHSEnabled  = true;        // 启用H1收盘价水平线
+input int             InpHSSpanMin  = 60;          // 线段长度(分钟，60=1小时)
+input bool            InpHSPerBar   = false;       // 每根K线各画一条(false=每小时一条)
+input int             InpHSMaxLines = 200;         // 最多保留条数(0=不限，慎用)
+input color           InpHSColor    = clrSilver;   // 线段颜色
+input ENUM_LINE_STYLE InpHSStyle    = STYLE_SOLID; // 线型
+input int             InpHSWidth    = 1;           // 线宽(1-5)
 
 input group "══════ 系统设置 ══════"
 input ENUM_SIGNAL_MODE InpMode       = MODE_MACD;   // 信号组合模式(需先启用对应模块；默认MACD)
@@ -245,6 +255,7 @@ CBigCandleModule g_candle;
 CTrendModule     g_ma;      // 模块7：双均线（默认启用 13/30 EMA）
 CPriceLineModule g_pl;      // 模块2：价格折线（高/低/开）
 CPatternModule   g_pat;     // 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）
+CHourSegModule   g_hs;      // 模块9：H1 收盘价水平线段（仅 <30min 周期）
 
 //--- 指标缓冲区
 double CandleOpen[];      // 模块6：K线着色 O/H/L/C
@@ -409,7 +420,7 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.45");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.46");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -560,6 +571,18 @@ int OnInit()
    if(!g_pat.Create(_Symbol, _Period, ptc))
       return(INIT_FAILED);
 
+   //--- 模块9：H1 收盘价水平线段（仅 <30min 周期生效；周期不符时内部自动清空）
+   HourSegSettings hsc;
+   hsc.Enabled     = InpHSEnabled;
+   hsc.SpanMinutes = InpHSSpanMin;
+   hsc.MaxLines    = InpHSMaxLines;
+   hsc.PerBar      = InpHSPerBar;
+   hsc.LineColor   = InpHSColor;
+   hsc.LineStyle   = InpHSStyle;
+   hsc.LineWidth   = InpHSWidth;
+   if(!g_hs.Create(_Symbol, _Period, hsc))
+      return(INIT_FAILED);
+
    //--- 秒级定时器：为倒计时提供稳定的秒级刷新（网格模块内部自行节流）
    //    注：即使定时器在个别环境下不回调，OnCalculate 每 tick 也会刷新外观层，
    //        只是刷新频率取决于行情节奏（活跃品种通常每秒多次）。
@@ -569,7 +592,7 @@ int OnInit()
 
    //--- 初始化自检（排查显示问题时先看这行）
    PrintFormat("MySystem v%s init: symbol=%s tf=%s MA=%s(%d/%d %s)",
-               "1.45", _Symbol, EnumToString(_Period),
+               "1.46", _Symbol, EnumToString(_Period),
                InpMaEnabled ? "ON" : "OFF", InpMaFast, InpMaSlow,
                EnumToString(InpMaMethod));
 
@@ -590,6 +613,7 @@ void OnDeinit(const int reason)
    g_ma.Release();          // 模块7：未启用时句柄为 INVALID_HANDLE，释放无害
    g_pl.Release();          // 模块2：无内部资源，占位调用
    g_pat.Release();         // 模块8：无内部资源，占位调用
+   g_hs.Release();          // 模块9：删除 H1 收盘价水平线对象
    EventKillTimer();
   }
 //+------------------------------------------------------------------+
@@ -616,6 +640,7 @@ int OnCalculate(const int rates_total,
    bool uiChanged = false;
    uiChanged = g_cd.Update(_Symbol, _Period)   || uiChanged;   // 模块3：倒计时 + 实时价格
    uiChanged = g_grid.Update(_Symbol, _Period) || uiChanged;   // 模块1：网格线（模块内部自行节流）
+   uiChanged = g_hs.Update(_Symbol, _Period)   || uiChanged;   // 模块9：H1 收盘价水平线（按新bar节流）
 
    //--- ★ 数据层：各模块「启用 + 就绪」互相独立，任一缺席只影响依赖它的信号模式
    bool enough = (rates_total >= minBars);
@@ -951,6 +976,7 @@ void OnTimer()
    bool changed = false;
    changed = g_cd.Update(_Symbol, _Period)   || changed;   // 模块3：每秒刷新
    changed = g_grid.Update(_Symbol, _Period) || changed;   // 模块1：内部节流到设定的更新间隔
+   changed = g_hs.Update(_Symbol, _Period)   || changed;   // 模块9：内部按新bar节流
    if(changed)
       ChartRedraw(0);
   }
