@@ -1,4 +1,4 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //|                                                   Countdown.mqh  |
 //|  模块3：K线倒计时模块（OBJ_LABEL 显示剩余时间 + 可选实时价格）       |
 //|  由 timer.mq5 提炼而来，接入主指标 MySystem 统一管理                |
@@ -36,21 +36,50 @@ private:
    string             m_lastText;   // 上一轮文本（变更检测，避免无谓重绘）
    int                m_lastX;
    int                m_lastY;
+   int                m_scanLeft;   // 启动期遗留标签兜底扫描次数
 
 public:
                      CCountdownModule(void) : m_label(""), m_created(false),
-                                              m_lastText(""), m_lastX(-1), m_lastY(-1) {}
+                                              m_lastText(""), m_lastX(-1), m_lastY(-1),
+                                              m_scanLeft(8) {}
                     ~CCountdownModule(void) { Release(); }
 
    //--- 初始化：创建标签对象（未启用则直接返回 true）
    bool               Create(const CountdownSettings &cfg)
      {
       m_cfg = cfg;
-      if(!m_cfg.Enabled)
-         return(true);
+      m_scanLeft = 8;
 
-      //--- 对象名带图表ID：模板复制到其他图表时不与旧对象冲突
+      //--- 对象名带图表ID：同图表多实例互不干扰
       m_label = "MySystem_Countdown_" + IntegerToString((int)ChartID());
+
+      //--- 清理遗留标签：模板会把指标创建的对象一起保存，套用到其他图表后
+      //    旧标签带源图表 ChartID，名字不同 -> 不会被本实例识别，永久残留
+      int stale = 0;
+      for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; i--)
+        {
+         string name = ObjectName(0, i, 0, -1);
+         if(name == m_label)
+            continue;
+         if(StringFind(name, "MySystem_Countdown") == 0)
+           {
+            ObjectDelete(0, name);
+            stale++;
+           }
+        }
+      if(stale > 0)
+         PrintFormat("Countdown: cleaned %d stale label(s)", stale);
+
+      if(!m_cfg.Enabled)
+        {
+         //--- 关闭状态同样不留标签（模板/上一实例可能已存在）
+         ObjectDelete(0, m_label);
+         m_created = false;
+         return(true);
+        }
+
+      //--- 同名对象可能来自模板/上一实例：先删再建，否则 ObjectCreate 直接失败
+      ObjectDelete(0, m_label);
 
       if(!ObjectCreate(0, m_label, OBJ_LABEL, 0, 0, 0))
         {
@@ -89,6 +118,20 @@ public:
      {
       if(!m_created)
          return(false);
+
+      //--- 启动期兜底：模板对象可能在 OnInit 之后才被恢复，前几次刷新各扫一遍
+      if(m_scanLeft > 0)
+        {
+         m_scanLeft--;
+         for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; i--)
+           {
+            string name = ObjectName(0, i, 0, -1);
+            if(name == m_label)
+               continue;
+            if(StringFind(name, "MySystem_Countdown") == 0)
+               ObjectDelete(0, name);
+           }
+        }
 
       datetime currentTime = TimeTradeServer();
       datetime lastBarTime = iTime(symbol, tf, 0);

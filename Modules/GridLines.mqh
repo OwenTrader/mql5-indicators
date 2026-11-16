@@ -204,6 +204,25 @@ private:
         }
      }
 
+   //--- 清理「同族但非本实例」的遗留对象
+   //    场景：模板里保存了源图表的网格对象（名字含源 ChartID），套用到新图表后
+   //    SyncGrid 的前缀过滤会跳过它们 -> 永久残留。这里按 ChartID 判别并删除。
+   int                CleanupForeign(void)
+     {
+      int removed = 0;
+      for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; i--)
+        {
+         string name = ObjectName(0, i, 0, -1);
+         if(StringFind(name, "MSGL_") != 0)        // 不是网格族
+            continue;
+         if(StringFind(name, m_prefix) == 0)       // 本实例的，交给 SyncGrid
+            continue;
+         if(ObjectDelete(0, name))
+            removed++;
+        }
+      return(removed);
+     }
+
    //--- 加入需求列表（含标签）
    void               AddToRequired(double price,const ENUM_GRIDLINE_TYPE type,
                                     string &arr[],int &count,const int digits)
@@ -378,8 +397,14 @@ private:
       for(int i = total_obj - 1; i >= 0; i--)
         {
          string name = ObjectName(0, i, 0, -1);
+         if(StringFind(name, "MSGL_") != 0)
+            continue;                             // 不是网格族
          if(StringFind(name, m_prefix) != 0)
-            continue;                             // 不是本模块的对象
+           {                                       // 其他图表/旧实例遗留（模板带入）
+            ObjectDelete(0, name);
+            changed = true;
+            continue;
+           }
 
          bool is_needed = false;
          for(int k = 0; k < req_count; k++)
@@ -511,8 +536,14 @@ public:
       m_cfg = cfg;
       m_styleDirty = true;              // 参数可能已变更：首次同步时对已有对象重套样式
 
-      //--- 对象名前缀带图表ID：模板/同一模板复制到多图表时不互相覆盖
+      //--- 对象名前缀带图表ID：同图表多实例互不干扰
       m_prefix = "MSGL_" + IntegerToString((int)ChartID()) + "_";
+
+      //--- 无论启用与否，先清掉其他图表/旧实例遗留的同族对象
+      //    （模板会连同指标创建的对象一起保存，套用到新图表后 ChartID 不匹配）
+      int stale = CleanupForeign();
+      if(stale > 0)
+         PrintFormat("Grid: cleaned %d stale object(s), prefix=%s", stale, m_prefix);
 
       if(!m_cfg.Enabled)
          return(true);
