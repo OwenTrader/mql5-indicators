@@ -138,9 +138,13 @@ mql5_skeleton/
 > 因此面板的定位是「**快速临时关闭**」，而不是替代指标属性。原本 `input` 就关闭的模块不会出现在面板上
 > （其句柄都未创建，打开也无效）；要长期启用请改 `input`。
 >
-> `InpPanelX/Y` 为距右上角的像素距离；`InpPanelCols` 列数；`InpPanelGrid/PL/CD/MA/PAT/HS/Candle` 控制哪些模块上榜；
+> `InpPanelX/Y` 为面板**右边缘/上边缘**距图表右边缘/顶部的像素；`InpPanelCols` 列数；`InpPanelGrid/PL/CD/MA/PAT/HS/Candle` 控制哪些模块上榜；
 > `InpPanelSignal` 控制 MACD / 震荡是否上榜（默认关，避免误触改变信号行为）。
 > 对象前缀 `MSPN_<ChartID>_`，套用模板时自动清理非本实例的遗留。
+> 定位方式：全部对象用 `CORNER_LEFT_UPPER` + 绝对像素坐标（`x = 图表宽 − X − 面板宽`），
+> 图表缩放/改窗口时由 `CHARTEVENT_CHART_CHANGE` 重排；高度不足自动上移、宽度不足贴左，
+> 保证整块面板始终在视窗内可点击。**不要**用 `CORNER_RIGHT_UPPER` —— MT5 对
+> `OBJ_BUTTON`/`OBJ_RECTANGLE_LABEL` 是把左边缘放在「距右边缘 XDISTANCE」处，对象会伸出视窗。
 
 > **模块9「H1 收盘价水平线」**（`InpHSEnabled`，**默认开启**，仅 `PeriodSeconds < 1800` 生效）：
 > 每个小时段一条水平线段，起点 = 该小时首根低周期K线的开盘时间（等于对应 H1 的开盘时间），

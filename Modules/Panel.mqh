@@ -42,6 +42,10 @@ private:
    string         m_labels[];    // 按钮文字
    bool           m_created;
    int            m_rows;
+   //--- 布局缓存（Layout 用）
+   int            m_btnW, m_btnH, m_gap, m_pad, m_cols;
+   int            m_panelW, m_panelH;
+   int            m_lastW, m_lastH;      // 上次布局时的图表尺寸
 
    //--- 按钮对象名
    string             BtnName(const int id) const
@@ -62,7 +66,10 @@ private:
      }
 
 public:
-                     CPanelModule(void) : m_prefix("MSPN_"), m_bg(""), m_created(false), m_rows(0) {}
+                     CPanelModule(void) : m_prefix("MSPN_"), m_bg(""), m_created(false), m_rows(0),
+                                          m_btnW(78), m_btnH(22), m_gap(4), m_pad(6), m_cols(2),
+                                          m_panelW(0), m_panelH(0),
+                                          m_lastW(-1), m_lastH(-1) {}
                     ~CPanelModule(void) { Release(); }
 
    bool               Enabled(void) const { return(m_cfg.Enabled && m_created); }
@@ -91,6 +98,66 @@ public:
          if(id >= 0 && id < ArraySize(states))
             StyleButton(id, states[id]);
         }
+     }
+
+   //--- 重新布局：按当前图表尺寸把面板贴到右上角
+   //    图表尺寸变化（缩放/改窗口/切品种）时由主指标的 CHART_CHANGE 事件调用
+   void               Layout(void)
+     {
+      if(!m_created)
+         return;
+
+      int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+      int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+      if(cw <= 0)
+         cw = 800;
+      if(ch <= 0)
+         ch = 600;
+
+      int x0 = cw - m_cfg.X - m_panelW;        // 右边缘留 m_cfg.X
+      if(x0 < 0)
+         x0 = 0;
+      if(x0 + m_panelW > cw)                    // 面板比图表还宽：贴左
+         x0 = 0;
+
+      int y0 = m_cfg.Y;
+      if(y0 + m_panelH > ch)                    // 高度不足：上移，保证全部可见
+         y0 = ch - m_panelH;
+      if(y0 < 0)
+         y0 = 0;
+
+      m_lastW = cw;
+      m_lastH = ch;
+
+      if(ObjectFind(0, m_bg) >= 0)
+        {
+         ObjectSetInteger(0, m_bg, OBJPROP_XDISTANCE, x0);
+         ObjectSetInteger(0, m_bg, OBJPROP_YDISTANCE, y0);
+        }
+
+      int n = ArraySize(m_ids);
+      for(int i = 0; i < n; i++)
+        {
+         string name = BtnName(m_ids[i]);
+         if(ObjectFind(0, name) < 0)
+            continue;
+         int row = i / m_cols;
+         int col = i % m_cols;
+         ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x0 + m_pad + col * (m_btnW + m_gap));
+         ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y0 + m_pad + row * (m_btnH + m_gap));
+        }
+     }
+
+   //--- 尺寸变化检测（CHART_CHANGE 事件未到达时的兜底，由 OnTimer 调用）
+   void               CheckResize(void)
+     {
+      if(!m_created)
+         return;
+      int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+      int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+      if(cw == m_lastW && ch == m_lastH)
+         return;
+      Layout();
      }
 
    //--- 初始化：创建背板与按钮
@@ -133,14 +200,17 @@ public:
          m_labels[i] = labels[i];
         }
 
-      int gap  = 4;
-      int pad  = 6;
-      int btnW = (m_cfg.BtnW > 20) ? m_cfg.BtnW : 78;
-      int btnH = (m_cfg.BtnH > 12) ? m_cfg.BtnH : 22;
-      int fs   = (m_cfg.FontSize > 5) ? m_cfg.FontSize : 9;
+      m_gap = 4;
+      m_pad = 6;
+      m_cols = cols;
+      m_btnW = (m_cfg.BtnW > 20) ? m_cfg.BtnW : 78;
+      m_btnH = (m_cfg.BtnH > 12) ? m_cfg.BtnH : 22;
+      int fs = (m_cfg.FontSize > 5) ? m_cfg.FontSize : 9;
 
-      int panelW = cols * (btnW + gap) - gap + pad * 2;
-      int panelH = rows * (btnH + gap) - gap + pad * 2;
+      m_panelW = cols * (m_btnW + m_gap) - m_gap + m_pad * 2;
+      m_panelH = rows * (m_btnH + m_gap) - m_gap + m_pad * 2;
+      int panelW = m_panelW;
+      int panelH = m_panelH;
 
       //--- 背板（先建，保证在按钮下层）
       if(ObjectFind(0, m_bg) >= 0)
@@ -150,9 +220,10 @@ public:
          Print(__FUNCTION__, ": 创建面板背板失败, err=", GetLastError());
          return(false);
         }
-      ObjectSetInteger(0, m_bg, OBJPROP_CORNER,     CORNER_RIGHT_UPPER);
-      ObjectSetInteger(0, m_bg, OBJPROP_XDISTANCE,  m_cfg.X);
-      ObjectSetInteger(0, m_bg, OBJPROP_YDISTANCE,  m_cfg.Y);
+      //--- 统一用左上角锚定 + 绝对像素坐标：
+      //    MT5 的 CORNER_RIGHT_UPPER 对 OBJ_BUTTON/OBJ_RECTANGLE_LABEL 是把
+      //    左边缘放在「距右边缘 XDISTANCE」处，对象会向右伸出视窗 -> 不可交互
+      ObjectSetInteger(0, m_bg, OBJPROP_CORNER,     CORNER_LEFT_UPPER);
       ObjectSetInteger(0, m_bg, OBJPROP_XSIZE,      panelW);
       ObjectSetInteger(0, m_bg, OBJPROP_YSIZE,      panelH);
       ObjectSetInteger(0, m_bg, OBJPROP_BGCOLOR,    (color)C'28,28,28');
@@ -174,16 +245,9 @@ public:
             Print(__FUNCTION__, ": 创建按钮失败 id=", id, " err=", GetLastError());
             continue;
            }
-         int row = i / cols;
-         int col = i % cols;
-         int x   = m_cfg.X + pad + (cols - 1 - col) * (btnW + gap);
-         int y   = m_cfg.Y + pad + row * (btnH + gap);
-
-         ObjectSetInteger(0, name, OBJPROP_CORNER,      CORNER_RIGHT_UPPER);
-         ObjectSetInteger(0, name, OBJPROP_XDISTANCE,   x);
-         ObjectSetInteger(0, name, OBJPROP_YDISTANCE,   y);
-         ObjectSetInteger(0, name, OBJPROP_XSIZE,       btnW);
-         ObjectSetInteger(0, name, OBJPROP_YSIZE,       btnH);
+         ObjectSetInteger(0, name, OBJPROP_CORNER,      CORNER_LEFT_UPPER);
+         ObjectSetInteger(0, name, OBJPROP_XSIZE,       m_btnW);
+         ObjectSetInteger(0, name, OBJPROP_YSIZE,       m_btnH);
          ObjectSetInteger(0, name, OBJPROP_FONTSIZE,    fs);
          ObjectSetString (0, name, OBJPROP_FONT,        "Microsoft YaHei");
          ObjectSetString (0, name, OBJPROP_TEXT,        m_labels[i]);
@@ -196,6 +260,7 @@ public:
 
       m_rows    = rows;
       m_created = true;
+      Layout();
       return(true);
      }
 
