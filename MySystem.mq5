@@ -15,7 +15,7 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.48"
+#property version     "1.49"
 #property description "模块化交易系统骨架：主指标聚合器"
 #property description "默认开启：网格线 + 价格折线(高/低) + K线倒计时 + 双均线(13/30 EMA，含画线)"
 #property description "默认关闭：MACD二线交叉 / 震荡触发 / MACD动量 / K线着色 / 形态识别"
@@ -106,7 +106,9 @@ enum ENUM_MOD_ID
   };
 
 bool g_runOn[MID_TOTAL];      // 运行时开关（OnInit 置 true，面板点击切换）
-bool g_panelDirty = false;    // 本轮需要按新状态清理/重建对象
+bool g_panelDirty  = false;   // 本轮需要按新状态清理/重建对象
+bool g_repaintAll  = false;   // 只需要绘图缓冲从 0 重画（不重算指标数据）
+long g_oldDragTrade = -1;     // 面板锁定前的「可拖拽交易水平线」原值（-1=未记录）
 
 //--- 模块是否实际启用：只看运行时开关
 //    初始值 = 对应 input（OnInit 时拷贝），面板点击后只改 g_runOn
@@ -298,6 +300,7 @@ input bool InpPanelPAT      = true;   // 面板显示：形态识别
 input bool InpPanelHS       = true;   // 面板显示：H1水平线
 input bool InpPanelCandle   = false;  // 面板显示：K线着色
 input bool InpPanelSignal   = false;  // 面板显示：MACD / 震荡
+input bool InpPanelLockTrade = true;  // 面板启用时禁止拖动订单线(防误改SL/TP)
 
 //--- 模块实例（全局单例）
 CMacdModule      g_macd;
@@ -492,7 +495,7 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.48");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.49");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -667,7 +670,7 @@ int OnInit()
 
    //--- 初始化自检（排查显示问题时先看这行）
    PrintFormat("MySystem v%s init: symbol=%s tf=%s MA=%s(%d/%d %s)",
-               "1.48", _Symbol, EnumToString(_Period),
+               "1.49", _Symbol, EnumToString(_Period),
                InpMaEnabled ? "ON" : "OFF", InpMaFast, InpMaSlow,
                EnumToString(InpMaMethod));
 
@@ -680,6 +683,15 @@ int OnInit()
    pn.BtnH     = InpPanelBtnH;
    pn.Cols     = InpPanelCols;
    pn.FontSize = InpPanelFontSize;
+
+   //--- 面板与订单线（SL/TP）重叠时，MT5 会把点击交给交易水平线 -> 误改订单。
+   //    面板启用时关闭「鼠标拖拽交易水平线」，卸载时恢复原值。
+   if(InpPanelEnabled && InpPanelLockTrade && g_oldDragTrade < 0)
+     {
+      g_oldDragTrade = (long)ChartGetInteger(0, CHART_DRAG_TRADE_LEVELS);
+      ChartSetInteger(0, CHART_DRAG_TRADE_LEVELS, false);
+      PrintFormat("Panel: trade-level drag disabled (was %d)", (int)g_oldDragTrade);
+     }
 
    int    pIds[];
    string pNames[];
@@ -720,6 +732,13 @@ void OnDeinit(const int reason)
    g_pat.Release();         // 模块8：无内部资源，占位调用
    g_hs.Release();          // 模块9：删除 H1 收盘价水平线对象
    g_panel.Release();       // 模块10：删除快捷面板对象
+
+   //--- 恢复交易水平线拖拽（仅当本指标禁用过）
+   if(g_oldDragTrade >= 0)
+     {
+      ChartSetInteger(0, CHART_DRAG_TRADE_LEVELS, (bool)g_oldDragTrade);
+      g_oldDragTrade = -1;
+     }
    EventKillTimer();
   }
 //+------------------------------------------------------------------+
@@ -766,8 +785,9 @@ void ApplyPanelChange(void)
       g_patWinStart = -1;
      }
 
-   //--- 均线/折线/着色：置全量标志，下一轮 OnCalculate 从 0 重画（会把禁用项写成 EMPTY）
-   g_needFull   = true;
+   //--- 均线/折线/着色：只置「重绘」标志，下一轮 OnCalculate 从 0 重画；
+   //    不置 g_needFull（那会让 MACD/ATR/形态等全部重算，慢在数据层而不是绘图）
+   g_repaintAll = true;
    g_panelDirty = false;
    ChartRedraw(0);
   }
@@ -831,7 +851,9 @@ int OnCalculate(const int rates_total,
    bool dataOk = depsOk && cdlOk && maOk;
 
    //--- 计算起点：需要全量重算时从 0 开始（g_needFull 保证历史不被漏算）
-   bool full  = (g_needFull || prev_calculated <= 0 || prev_calculated > rates_total);
+   //    g_repaintAll 只让「绘图层」从 0 重画，不让各模块重新 Calculate/Prepare
+   //    （面板开关若走 g_needFull，一次点击要重算全历史，表现为好几秒才生效）
+   bool full  = (g_needFull || g_repaintAll || prev_calculated <= 0 || prev_calculated > rates_total);
    int  start = full ? 0 : prev_calculated - 1;
 
    //--- 缓冲区清空：纯数组写入，代价极低，必须先于任何分类逻辑
@@ -1139,8 +1161,9 @@ int OnCalculate(const int rates_total,
       if(sell) BufSell[i] = high[i];
      }
 
-   //--- 全量+所有依赖均就绪：清除「需要全量重算」标记
-   g_needFull = false;
+   //--- 全量+所有依赖均就绪：清除「需要全量重算 / 重绘」标记
+   g_needFull   = false;
+   g_repaintAll = false;
 
    //--- 外观对象（倒计时文本/位置、网格线样式）改动后需一次重绘才会立即显现
    //    注：外观层已在函数开头刷新过，这里只负责"把结果画出来"
@@ -1163,18 +1186,34 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       return;
      }
 
-   if(id != CHARTEVENT_OBJECT_CLICK)
+   //--- 按钮点击：对象事件 + 坐标兜底（按钮压在订单线上时对象事件会被吞）
+   if(id != CHARTEVENT_OBJECT_CLICK && id != CHARTEVENT_CLICK)
       return;
 
-   int mid = g_panel.HitTest(sparam);
-   if(mid < 0 || mid >= MID_TOTAL)
+   //--- 两类事件可能同时到达（对象点击也会发 CHARTEVENT_CLICK）：共享 250ms 去抖，
+   //    否则同一次点击会 toggle 两次、看起来「没反应」
+   static uint s_last = 0;
+   uint now = GetTickCount();
+   if(now - s_last < 250)
       return;
+
+   int mid = (id == CHARTEVENT_OBJECT_CLICK)
+             ? g_panel.HitTest(sparam)
+             : g_panel.HitTestXY((int)lparam, (int)dparam);
+   if(mid < 0 || mid >= MID_TOTAL)
+      return;                       // 点在图表空白处：不计时，下次点击照常响应
+
+   s_last = now;
 
    g_runOn[mid] = !g_runOn[mid];
    g_panelDirty = true;
+
+   //--- 先更新按钮外观并重绘（用户立刻看到反馈），再执行对象重建/整体重画
    g_panel.Refresh(g_runOn);
+   ChartRedraw(0);
    PrintFormat("Panel: module=%d -> %s", mid, g_runOn[mid] ? "ON" : "OFF");
-   ApplyPanelChange();               // 点击即生效（周末无 tick 也不等）
+
+   ApplyPanelChange();               // 对象类即时生效（周末无 tick 也不等）
   }
 //+------------------------------------------------------------------+
 //| Timer 事件：每秒刷新外观层（倒计时/网格线）                         |

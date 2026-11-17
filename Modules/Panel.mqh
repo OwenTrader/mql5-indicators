@@ -46,6 +46,7 @@ private:
    int            m_btnW, m_btnH, m_gap, m_pad, m_cols;
    int            m_panelW, m_panelH;
    int            m_lastW, m_lastH;      // 上次布局时的图表尺寸
+   int            m_bx[], m_by[];        // 每个按钮的屏幕左上角（供坐标命中）
 
    //--- 按钮对象名
    string             BtnName(const int id) const
@@ -83,6 +84,24 @@ public:
       for(int i = 0; i < n; i++)
          if(obj_name == BtnName(m_ids[i]))
             return(m_ids[i]);
+      return(-1);
+     }
+
+   //--- 坐标命中：处理 CHARTEVENT_CLICK（对象点击被交易线吞掉时的兜底）
+   //    坐标与对象 XDISTANCE 同为「图表客户区左上角」原点
+   int                HitTestXY(const int x,const int y)
+     {
+      if(!m_created)
+         return(-1);
+      int n = ArraySize(m_ids);
+      for(int i = 0; i < n; i++)
+        {
+         if(i >= ArraySize(m_bx))
+            continue;
+         if(x >= m_bx[i] && x < m_bx[i] + m_btnW &&
+            y >= m_by[i] && y < m_by[i] + m_btnH)
+            return(m_ids[i]);
+        }
       return(-1);
      }
 
@@ -143,8 +162,15 @@ public:
             continue;
          int row = i / m_cols;
          int col = i % m_cols;
-         ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x0 + m_pad + col * (m_btnW + m_gap));
-         ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y0 + m_pad + row * (m_btnH + m_gap));
+         int bx = x0 + m_pad + col * (m_btnW + m_gap);
+         int by = y0 + m_pad + row * (m_btnH + m_gap);
+         ObjectSetInteger(0, name, OBJPROP_XDISTANCE, bx);
+         ObjectSetInteger(0, name, OBJPROP_YDISTANCE, by);
+         if(i < ArraySize(m_bx))
+           {
+            m_bx[i] = bx;
+            m_by[i] = by;
+           }
         }
      }
 
@@ -194,6 +220,8 @@ public:
 
       ArrayResize(m_ids, n);
       ArrayResize(m_labels, n);
+      ArrayResize(m_bx, n);
+      ArrayResize(m_by, n);
       for(int i = 0; i < n; i++)
         {
          m_ids[i]    = ids[i];
@@ -254,7 +282,7 @@ public:
          ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
          ObjectSetInteger(0, name, OBJPROP_BACK,        false);
          ObjectSetInteger(0, name, OBJPROP_SELECTABLE,  false);
-         ObjectSetInteger(0, name, OBJPROP_HIDDEN,      true);
+         ObjectSetInteger(0, name, OBJPROP_HIDDEN,      false);   // hidden 会吞点击事件
          StyleButton(id, true);                 // 初始一律按「开」上色，随后由 Refresh 校正
         }
 
@@ -274,6 +302,8 @@ public:
       m_created = false;
       ArrayResize(m_ids, 0);
       ArrayResize(m_labels, 0);
+      ArrayResize(m_bx, 0);
+      ArrayResize(m_by, 0);
      }
   };
 
