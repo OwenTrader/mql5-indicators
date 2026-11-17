@@ -16,7 +16,8 @@ mql5_skeleton/
 │   ├── OscSignal.mqh   ← 模块5：震荡触发（Stoch 超买超卖穿越）｜默认关
 │   ├── BigCandles.mqh  ← 模块6：K线着色（大实体/大影线 6 色 + ATR 自适应）｜默认关
 │   ├── TrendMA.mqh     ← 模块7：双均线（13/30 EMA，画线 + 方向过滤）｜默认开
-│   └── PatternSig.mqh  ← 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）｜默认关
+│   ├── PatternSig.mqh  ← 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）｜默认关
+│   └── Panel.mqh       ← 模块10：图表快捷面板（一键开关各模块）｜默认开
 └── README.md
 ```
 
@@ -51,6 +52,7 @@ mql5_skeleton/
 | 模块6 K线着色 | Enabled/**HideNormal**/**UseATR**/六色/ATR倍数与周期/各周期点数阈值(回退)/影线/预警 | **独立开关（v1.29 起默认关闭，InpCandleEnabled=false）**；6色K线分类、ATR自适应阈值（由 candle.mq5 提炼，plot0=DRAW_COLOR_CANDLES）。**HideNormal 默认开启 = 不绘制普通K线**，仅高亮特殊K线，普通K线交由图表原生绘制；**UseATR 默认开启**：大实体阈值 = `ATR × 倍数(默认1.5)`，ATR 未就绪时回退到「各周期最小实体点数」表 |
 | 模块7 双均线 | Enabled/Fast/Slow/Method/Price/**颜色/线型/粗细** | **默认开启，13 EMA / 30 EMA**（`MODE_EMA`、`PRICE_CLOSE`）。两个作用：① **画线**——plot7/plot8 输出快线与慢线，颜色/线型/粗细（1-5）可分别调整，关闭时缓冲全写 `EMPTY_VALUE`，不绘制；② **方向过滤**——任何模式产出的信号必须与双均线方向一致，否则丢弃。数据经 `Prepare()` 批量增量预取，过滤只查表 |
 | 模块8 形态识别 | Enabled/X/Y/Z/MinBody/AllowLonger/OnlyClosed/**MaxBars**/四色 | **独立开关（v1.38 起默认关闭）**；命中 `x根阳 + 1..y根阴 + z根阳`（或镜像）后对整段着色，plot6=`DRAW_COLOR_CANDLES`，涨形态绿 / 跌形态红 / 回调灰 / 重叠黄。**x/z 必须 >= 2，y 为上限**。小实体（实体 < `MinBody` 点）**不计数、不打断**。只处理最近 `MaxBars`(默认2000) 根。规则见下方说明 |
+| 模块10 快捷面板 | Enabled/X/Y/按钮宽高/列数/字号/各模块是否上榜 | **默认开启**。右上角一组按钮，点击即切换对应模块的运行时开关（**不改 input、不重载指标**）。按钮颜色：绿=开、灰=关。只把「input 已启用」的模块放上面板（未启用模块连句柄都没建，打开也无效）。状态**不持久化**：重启终端 / 切周期 / 改任一参数后回到 input 默认值 |
 | 模块9 H1收盘价水平线 | Enabled/**SpanMinutes**/PerBar/**MaxLines**/颜色/线型/线宽 | **默认开启，但只在周期 < 30min 时生效**（M1/M5/M15/M20；M30 及以上自动清空）。每小时段画一条 `OBJ_TREND` 水平线段：起点 = 该小时首根低周期K线开盘时间，长度 = `SpanMinutes`(默认60) 分钟，价格 = **该小时之前那根已完成 H1 的收盘价**。`PerBar=true` 改为每根K线各画一条。对象前缀 `MSHS_<ChartID>_`，只保留最近 `MaxLines`(默认200) 条 |
 
 调好一组参数后：图表右键 → 指标列表 → 保存为 **.set 预设文件**，之后一键切换。
@@ -123,6 +125,23 @@ mql5_skeleton/
 > 正确做法：`#property` 里定死类型，显隐只靠数据 —— 关闭时向缓冲区写 `EMPTY_VALUE`，并把 `PLOT_EMPTY_VALUE` 设为 `EMPTY_VALUE`。
 > 颜色 / 线型 / 线宽 / `PLOT_COLOR_INDEXES` / `PLOT_EMPTY_VALUE` 可以安全地在运行时设置。
 
+> **模块10「图表快捷面板」**（`InpPanelEnabled`，**默认开启**）：
+> 右上角一块背板 + 若干按钮，点击即开关对应模块，无需进「指标属性」逐项勾选。
+>
+> **MQL5 的硬限制（决定了面板的能力边界）**：指标的 `input` 参数在运行时不可修改，改参数必须重新初始化。
+> 所以面板**不改 input**，只维护一份运行时开关数组 `g_runOn[]`：
+> - 点击立即生效（`OnChartEvent` → `ApplyPanelChange()`），关闭时删除该模块的对象 / 清空其缓冲；
+> - 重新打开时用 `OnInit` 保存的配置副本重建对象，并置 `g_needFull` 让缓冲类整段重画；
+> - **状态不持久化**：重启终端、切换周期、或修改任一指标参数都会触发 `OnInit`，开关回到 `input` 默认值；
+> - 面板状态**不写入 .set 预设**。
+>
+> 因此面板的定位是「**快速临时关闭**」，而不是替代指标属性。原本 `input` 就关闭的模块不会出现在面板上
+> （其句柄都未创建，打开也无效）；要长期启用请改 `input`。
+>
+> `InpPanelX/Y` 为距右上角的像素距离；`InpPanelCols` 列数；`InpPanelGrid/PL/CD/MA/PAT/HS/Candle` 控制哪些模块上榜；
+> `InpPanelSignal` 控制 MACD / 震荡是否上榜（默认关，避免误触改变信号行为）。
+> 对象前缀 `MSPN_<ChartID>_`，套用模板时自动清理非本实例的遗留。
+
 > **模块9「H1 收盘价水平线」**（`InpHSEnabled`，**默认开启**，仅 `PeriodSeconds < 1800` 生效）：
 > 每个小时段一条水平线段，起点 = 该小时首根低周期K线的开盘时间（等于对应 H1 的开盘时间），
 > 长度 = `InpHSSpanMin` 分钟（默认 60 = 1 小时；M1 → 60 根、M5 → 12 根、M15 → 4 根），
@@ -162,6 +181,7 @@ mql5_skeleton/
 >   信号合成中该模块输出恒为 0，只让依赖它的模式失效（关模块5 → MODE_FILTER/MODE_ANY 无信号；关模块4 → MODE_MACD/FILTER/MOMENTUM 无信号）。
 > - **着色类（模块6 / 8）**：不判定、不写缓冲区；模块8 的计数数组 `PatHits/PatRole` 也不再分配。
 > - **显示类（模块1 / 2 / 3 / 9）**：不创建图形对象、不刷新，`Release()` 会清掉已建对象。
+> - **模块10 面板**：只创建按钮与背板对象（`MSPN_` 前缀），关闭时 `Release()` 一并删除。
 > - **关不掉的部分**：MT5 按 `indicator_buffers`（本指标 17 个）为**全部历史**预分配 double 绘图缓冲，
 >   约 **136 字节/bar**，与开关无关（100 万根 M1 ≈ 136MB）。想彻底省掉只能把对应 plot 拆成独立子指标。
 > - 预热 bar 数 `minBars` 只按「已启用」的模块累加，禁用模块不占预热位。

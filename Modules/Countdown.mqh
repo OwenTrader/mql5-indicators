@@ -100,6 +100,8 @@ public:
       return(true);
      }
 
+   bool               Created(void) const { return(m_created); }
+
    //--- 释放：删除标签对象
    void               Release(void)
      {

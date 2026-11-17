@@ -15,7 +15,7 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.46"
+#property version     "1.47"
 #property description "模块化交易系统骨架：主指标聚合器"
 #property description "默认开启：网格线 + 价格折线(高/低) + K线倒计时 + 双均线(13/30 EMA，含画线)"
 #property description "默认关闭：MACD二线交叉 / 震荡触发 / MACD动量 / K线着色 / 形态识别"
@@ -79,6 +79,7 @@
 #include "Modules\PriceLines.mqh" // 模块2：价格折线（高/低/开，三条折线可独立开关）
 #include "Modules\PatternSig.mqh" // 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）
 #include "Modules\HourSeg.mqh"    // 模块9：H1 收盘价水平线段（仅周期 < 30min 生效）
+#include "Modules\Panel.mqh"      // 模块10：图表快捷面板（一键开关各模块）
 
 //--- 信号组合模式
 enum ENUM_SIGNAL_MODE
@@ -88,6 +89,42 @@ enum ENUM_SIGNAL_MODE
    MODE_MACD     = 2,   // ★MACD二线交叉(DIF上穿/下穿DEA) —— 默认
    MODE_MOMENTUM = 3    // MACD柱动量耗尽确认(加速→减速→反向穿越)
   };
+
+//--- 模块运行时开关（面板可切换；不改 input，指标不重载）
+enum ENUM_MOD_ID
+  {
+   MID_GRID = 0,     // 模块1 网格线
+   MID_PL,           // 模块2 价格折线
+   MID_CD,           // 模块3 倒计时
+   MID_MA,           // 模块7 双均线
+   MID_PAT,          // 模块8 形态识别
+   MID_HS,           // 模块9 H1 收盘价水平线
+   MID_CANDLE,       // 模块6 K线着色
+   MID_MACD,         // 模块4 MACD
+   MID_OSC,          // 模块5 震荡
+   MID_TOTAL
+  };
+
+bool g_runOn[MID_TOTAL];      // 运行时开关（OnInit 置 true，面板点击切换）
+bool g_panelDirty = false;    // 本轮需要按新状态清理/重建对象
+
+//--- 模块是否实际启用：只看运行时开关
+//    初始值 = 对应 input（OnInit 时拷贝），面板点击后只改 g_runOn
+//    这样 input 关闭的模块也能被面板临时打开，input 改回后 OnInit 重新取初值
+bool ModOn(const ENUM_MOD_ID id)
+  {
+   return(g_runOn[id]);
+  }
+
+//--- 面板按钮注册（主指标 OnInit 内使用）
+void PanelAdd(int &ids[],string &names[],const int id,const string label)
+  {
+   int n = ArraySize(ids);
+   ArrayResize(ids, n + 1);
+   ArrayResize(names, n + 1);
+   ids[n]   = id;
+   names[n] = label;
+  }
 
 //=== 参数：分组收纳，只在这里暴露可调项 ==============================
 //    顺序 = 使用频率：默认开启的三个显示模块（网格线/价格折线/倒计时）排最前，
@@ -245,6 +282,23 @@ input color  InpPatBearColor = clrRed;          // 主体段阴线颜色(默认�
 input color  InpPatMidColor  = clrGray;         // 回调段/小实体颜色(默认灰)
 input color  InpPatOverlapColor = clrYellow;    // 形态重叠部分颜色(默认黄)
 
+input group "══════ 模块10：图表快捷面板 ══════"
+input bool InpPanelEnabled  = true;   // 启用图表快捷面板
+input int  InpPanelX        = 8;      // 距右边缘(像素)
+input int  InpPanelY        = 20;     // 距顶部(像素)
+input int  InpPanelBtnW     = 78;     // 按钮宽(像素)
+input int  InpPanelBtnH     = 22;     // 按钮高(像素)
+input int  InpPanelCols     = 2;      // 列数
+input int  InpPanelFontSize = 9;      // 按钮字号
+input bool InpPanelGrid     = true;   // 面板显示：网格线
+input bool InpPanelPL       = true;   // 面板显示：价格折线
+input bool InpPanelCD       = true;   // 面板显示：倒计时
+input bool InpPanelMA       = true;   // 面板显示：双均线
+input bool InpPanelPAT      = true;   // 面板显示：形态识别
+input bool InpPanelHS       = true;   // 面板显示：H1水平线
+input bool InpPanelCandle   = false;  // 面板显示：K线着色
+input bool InpPanelSignal   = false;  // 面板显示：MACD / 震荡
+
 //--- 模块实例（全局单例）
 CMacdModule      g_macd;
 COscModule       g_osc;
@@ -256,6 +310,12 @@ CTrendModule     g_ma;      // 模块7：双均线（默认启用 13/30 EMA）
 CPriceLineModule g_pl;      // 模块2：价格折线（高/低/开）
 CPatternModule   g_pat;     // 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）
 CHourSegModule   g_hs;      // 模块9：H1 收盘价水平线段（仅 <30min 周期）
+CPanelModule     g_panel;   // 模块10：图表快捷面板
+
+//--- 面板重新开启时重建对象所需的配置副本
+CountdownSettings g_ccCfg;
+GridSettings      g_gcCfg;
+HourSegSettings   g_hsCfg;
 
 //--- 指标缓冲区
 double CandleOpen[];      // 模块6：K线着色 O/H/L/C
@@ -323,6 +383,18 @@ int OnInit()
   {
    //--- 重初始化（切周期/改参数）后必须从 0 全量重算
    g_needFull = true;
+
+   //--- 运行时开关取 input 作初值（面板状态不持久化，见 Panel.mqh 头部说明）
+   g_runOn[MID_GRID]   = InpGridEnabled;
+   g_runOn[MID_PL]     = InpPLEnabled;
+   g_runOn[MID_CD]     = InpCdEnabled;
+   g_runOn[MID_MA]     = InpMaEnabled;
+   g_runOn[MID_PAT]    = InpPatEnabled;
+   g_runOn[MID_HS]     = InpHSEnabled;
+   g_runOn[MID_CANDLE] = InpCandleEnabled;
+   g_runOn[MID_MACD]   = InpMacdEnabled;
+   g_runOn[MID_OSC]    = InpOscEnabled;
+   g_panelDirty = false;
 
    //--- 模块6：K线着色缓冲区（plot 0 = DRAW_COLOR_CANDLES）
    SetIndexBuffer(0, CandleOpen,  INDICATOR_DATA);
@@ -420,7 +492,7 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.46");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.47");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -469,6 +541,7 @@ int OnInit()
    cc.YOffset   = InpCdYOffset;
    cc.ShowPrice = InpCdShowPrice;
    cc.Separator = InpCdSeparator;
+   g_ccCfg = cc;                       // 面板重新开启时重建标签
    if(!g_cd.Create(cc))
       return(INIT_FAILED);
 
@@ -503,6 +576,7 @@ int OnInit()
    gc.ShowLabels      = InpGridShowLabels;
    gc.LabelColor      = InpGridLabelColor;
    gc.LabelFont       = InpGridLabelFont;
+   g_gcCfg = gc;                       // 面板重新开启时重建网格
    if(!g_grid.Create(_Symbol, _Period, gc))
       return(INIT_FAILED);
 
@@ -580,6 +654,7 @@ int OnInit()
    hsc.LineColor   = InpHSColor;
    hsc.LineStyle   = InpHSStyle;
    hsc.LineWidth   = InpHSWidth;
+   g_hsCfg = hsc;                      // 面板重新开启时重建线段
    if(!g_hs.Create(_Symbol, _Period, hsc))
       return(INIT_FAILED);
 
@@ -592,9 +667,39 @@ int OnInit()
 
    //--- 初始化自检（排查显示问题时先看这行）
    PrintFormat("MySystem v%s init: symbol=%s tf=%s MA=%s(%d/%d %s)",
-               "1.46", _Symbol, EnumToString(_Period),
+               "1.47", _Symbol, EnumToString(_Period),
                InpMaEnabled ? "ON" : "OFF", InpMaFast, InpMaSlow,
                EnumToString(InpMaMethod));
+
+   //--- 模块10：图表快捷面板
+   PanelSettings pn;
+   pn.Enabled  = InpPanelEnabled;
+   pn.X        = InpPanelX;
+   pn.Y        = InpPanelY;
+   pn.BtnW     = InpPanelBtnW;
+   pn.BtnH     = InpPanelBtnH;
+   pn.Cols     = InpPanelCols;
+   pn.FontSize = InpPanelFontSize;
+
+   int    pIds[];
+   string pNames[];
+   //--- 只把「input 已启用」的模块放上面板：
+   //    input 关闭的模块连句柄都没创建，面板打开也无效，故不显示（避免误导）
+   if(InpPanelGrid   && InpGridEnabled)   PanelAdd(pIds, pNames, MID_GRID,   "网格");
+   if(InpPanelPL     && InpPLEnabled)     PanelAdd(pIds, pNames, MID_PL,     "折线");
+   if(InpPanelCD     && InpCdEnabled)     PanelAdd(pIds, pNames, MID_CD,     "倒计时");
+   if(InpPanelMA     && InpMaEnabled)     PanelAdd(pIds, pNames, MID_MA,     "均线");
+   if(InpPanelPAT    && InpPatEnabled)    PanelAdd(pIds, pNames, MID_PAT,    "形态");
+   if(InpPanelHS     && InpHSEnabled)     PanelAdd(pIds, pNames, MID_HS,     "H1线");
+   if(InpPanelCandle && InpCandleEnabled) PanelAdd(pIds, pNames, MID_CANDLE, "着色");
+   if(InpPanelSignal)
+     {
+      if(InpMacdEnabled) PanelAdd(pIds, pNames, MID_MACD, "MACD");
+      if(InpOscEnabled)  PanelAdd(pIds, pNames, MID_OSC,  "震荡");
+     }
+   if(!g_panel.Create(pn, pIds, pNames))
+      return(INIT_FAILED);
+   g_panel.Refresh(g_runOn);
 
    //--- 首次绘制网格线
    g_grid.Update(_Symbol, _Period);
@@ -614,7 +719,57 @@ void OnDeinit(const int reason)
    g_pl.Release();          // 模块2：无内部资源，占位调用
    g_pat.Release();         // 模块8：无内部资源，占位调用
    g_hs.Release();          // 模块9：删除 H1 收盘价水平线对象
+   g_panel.Release();       // 模块10：删除快捷面板对象
    EventKillTimer();
+  }
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| 应用面板切换：删/建对象 + 让缓冲类整段重画                          |
+//| 由 OnChartEvent 直接调用（点击即生效，不必等 tick），                |
+//| OnCalculate / OnTimer 调用作为兜底。                              |
+//+------------------------------------------------------------------+
+void ApplyPanelChange(void)
+  {
+   if(!g_panelDirty)
+      return;
+
+   //--- 对象类：关闭 -> 删对象；打开 -> 重建（不清 input、不重载指标）
+   if(!ModOn(MID_GRID))
+      g_grid.Release();
+   else
+      g_grid.Create(_Symbol, _Period, g_gcCfg);
+
+   if(!ModOn(MID_CD))
+      g_cd.Release();
+   else if(!g_cd.Created())
+      g_cd.Create(g_ccCfg);
+
+   if(!ModOn(MID_HS))
+      g_hs.Release();
+   else
+      g_hs.Create(_Symbol, _Period, g_hsCfg);
+
+   //--- 缓冲类：形态关掉后必须立刻抹掉已画颜色，否则会停在图表上
+   if(!ModOn(MID_PAT))
+     {
+      int n = ArraySize(PatOpen);
+      for(int i = 0; i < n; i++)
+        {
+         PatOpen[i]  = EMPTY_VALUE;
+         PatHigh[i]  = EMPTY_VALUE;
+         PatLow[i]   = EMPTY_VALUE;
+         PatClose[i] = EMPTY_VALUE;
+         PatColor[i] = 0;
+        }
+      ArrayInitialize(PatHits, 0);
+      ArrayInitialize(PatRole, 0);
+      g_patWinStart = -1;
+     }
+
+   //--- 均线/折线/着色：置全量标志，下一轮 OnCalculate 从 0 重画（会把禁用项写成 EMPTY）
+   g_needFull   = true;
+   g_panelDirty = false;
+   ChartRedraw(0);
   }
 //+------------------------------------------------------------------+
 int OnCalculate(const int rates_total,
@@ -638,9 +793,17 @@ int OnCalculate(const int rates_total,
    //    外观层不依赖任何指标数据，因此提到最前，且永不被后续逻辑短路。
    //    返回值 = 对象是否真的发生变化，只有变化时才重绘（省掉每 tick 的 ChartRedraw）
    bool uiChanged = false;
-   uiChanged = g_cd.Update(_Symbol, _Period)   || uiChanged;   // 模块3：倒计时 + 实时价格
-   uiChanged = g_grid.Update(_Symbol, _Period) || uiChanged;   // 模块1：网格线（模块内部自行节流）
-   uiChanged = g_hs.Update(_Symbol, _Period)   || uiChanged;   // 模块9：H1 收盘价水平线（按新bar节流）
+
+   //--- 面板切换（点击时已应用，这里兜底）
+   ApplyPanelChange();
+
+   //--- 外观层按运行时开关调用；关闭时不再刷新（对象已在上面的 dirty 分支删除）
+   if(ModOn(MID_CD))
+      uiChanged = g_cd.Update(_Symbol, _Period) || uiChanged;      // 模块3：倒计时 + 实时价格
+   if(ModOn(MID_GRID))
+      uiChanged = g_grid.Update(_Symbol, _Period) || uiChanged;    // 模块1：网格线（内部节流）
+   if(ModOn(MID_HS))
+      uiChanged = g_hs.Update(_Symbol, _Period) || uiChanged;      // 模块9：H1 水平线（按新bar节流）
 
    //--- ★ 数据层：各模块「启用 + 就绪」互相独立，任一缺席只影响依赖它的信号模式
    bool enough = (rates_total >= minBars);
@@ -649,20 +812,20 @@ int OnCalculate(const int rates_total,
    int prevForModules = g_needFull ? 0 : prev_calculated;
 
    bool cdlOk  = g_candle.Prepare(rates_total, prevForModules);              // 模块6：ATR（可选）
-   bool macdOk = InpMacdEnabled && enough && g_macd.Calculate(rates_total, prevForModules); // 模块4
-   bool oscOk  = InpOscEnabled  && enough && g_osc.Prepare(rates_total, prevForModules);    // 模块5
+   bool macdOk = ModOn(MID_MACD) && enough && g_macd.Calculate(rates_total, prevForModules); // 模块4
+   bool oscOk  = ModOn(MID_OSC)  && enough && g_osc.Prepare(rates_total, prevForModules);    // 模块5
    bool rsiOk  = true;
-   if(InpMacdEnabled && InpMacdUseRSI)                                       // 模块4b：RSI
+   if(ModOn(MID_MACD) && InpMacdUseRSI)                      // 模块4b：RSI
       rsiOk = g_rsi.Prepare(rates_total, prevForModules);
 
    bool maOk = true;
-   if(InpMaEnabled)                                                          // 模块7：双均线
+   if(ModOn(MID_MA))                                           // 模块7：双均线
       maOk = g_ma.Prepare(rates_total, prevForModules);
 
    //--- 当前信号模式真正依赖哪些模块（依赖项未就绪 => 本轮不出信号，等下一轮补算）
-   bool macdReq = InpMacdEnabled && (InpMode == MODE_MACD || InpMode == MODE_FILTER || InpMode == MODE_MOMENTUM);
-   bool oscReq  = InpOscEnabled  && (InpMode == MODE_FILTER || InpMode == MODE_ANY);
-   bool rsiReq  = InpMacdEnabled && InpMacdUseRSI && InpMode == MODE_MOMENTUM;
+   bool macdReq = ModOn(MID_MACD) && (InpMode == MODE_MACD || InpMode == MODE_FILTER || InpMode == MODE_MOMENTUM);
+   bool oscReq  = ModOn(MID_OSC)  && (InpMode == MODE_FILTER || InpMode == MODE_ANY);
+   bool rsiReq  = ModOn(MID_MACD) && InpMacdUseRSI && InpMode == MODE_MOMENTUM;
 
    bool depsOk = (!macdReq || macdOk) && (!oscReq || oscOk) && (!rsiReq || rsiOk);
    bool dataOk = depsOk && cdlOk && maOk;
@@ -691,7 +854,15 @@ int OnCalculate(const int rates_total,
      }
 
    //--- 模块2：价格折线（高/低/开）—— 仅依赖价格序列，无条件刷新
-   g_pl.Fill(start, rates_total, open, high, low, PLHigh, PLLow, PLOpen);
+   if(ModOn(MID_PL))
+      g_pl.Fill(start, rates_total, open, high, low, PLHigh, PLLow, PLOpen);
+   else
+      for(int i = start; i < rates_total; i++)   // 面板关闭：只清增量区，避免每tick全量写
+        {
+         PLHigh[i] = EMPTY_VALUE;
+         PLLow[i]  = EMPTY_VALUE;
+         PLOpen[i] = EMPTY_VALUE;
+        }
 
    //--- 数据不全：保留 g_needFull，本轮不写分类/信号，下轮从 0 全量补算
    if(!dataOk)
@@ -704,7 +875,7 @@ int OnCalculate(const int rates_total,
 
    //--- 5-1 K线着色（模块6，默认关闭；开启时覆盖 [start, rates_total)）
    //    独立于 MACD/Stoch 就绪状态：只要 ATR 就绪即写满，避免新bar出现垃圾值
-   if(g_candle.Enabled())
+   if(ModOn(MID_CANDLE) && g_candle.Enabled())
       for(int i = start; i < rates_total; i++)
         {
          //--- 分类（内部顺带处理预警，故须在「是否绘制」判定之前调用）
@@ -725,7 +896,7 @@ int OnCalculate(const int rates_total,
 
    //--- 模块7：双均线绘制（plot 7/8；关闭时 plot 已为 DRAW_NONE）
    //    数据由 Prepare() 批量预取，这里只做查表搬运，无 API 调用
-   if(InpMaEnabled)
+   if(ModOn(MID_MA))
      {
       //--- 首次 / 数组重建 / 历史被补齐时，从最早有效bar整段补画；
       //    否则只补增量区间（避免每tick重写全历史）
@@ -750,7 +921,19 @@ int OnCalculate(const int rates_total,
    //    ① 统计「每根bar被多少个形态覆盖」——重叠部分（涨的末端同时是跌的开端等）
    //    ② 统一着色：覆盖1次 -> 主体段按方向(阳绿/阴红) / 回调与小实体灰色
    //                  覆盖>=2   -> 黄色（重叠，含义不确定）
-   if(g_pat.Enabled())
+   if(!ModOn(MID_PAT) || !g_pat.Enabled())
+     {
+      //--- 关闭：清掉本轮增量区的颜色（全量由 ApplyPanelChange / 开头的全量轮负责）
+      for(int i = start; i < rates_total; i++)
+        {
+         PatOpen[i]  = EMPTY_VALUE;
+         PatHigh[i]  = EMPTY_VALUE;
+         PatLow[i]   = EMPTY_VALUE;
+         PatClose[i] = EMPTY_VALUE;
+         PatColor[i] = 0;
+        }
+     }
+   else
      {
       //--- 形态层窗口：只处理最近 InpPatMaxBars 根（内存与绘制量受控）
       //    winStart = 窗口首根；计数数组按【窗口大小】分配，用相对下标 k-winStart 访问
@@ -943,7 +1126,7 @@ int OnCalculate(const int rates_total,
 
       //--- 模块7：双均线方向过滤（默认开启）
       //    只有已出现候选信号时才去取均线值，避免全历史逐bar取数（性能）
-      if(InpMaEnabled && (buy || sell))
+      if(ModOn(MID_MA) && (buy || sell))
         {
          int maState = g_ma.TrendState(i);
          if(buy  && maState < 0)   // 双均线空头：丢弃做多候选
@@ -967,16 +1150,42 @@ int OnCalculate(const int rates_total,
    return(rates_total);
   }
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| 图表事件：处理面板按钮点击                                        |
+//| 注：MQL5 指标的 input 不可运行时修改，这里只翻转 g_runOn[]，       |
+//|     不改参数、不重载指标；重启/切周期后回到 input 的默认值。        |
+//+------------------------------------------------------------------+
+void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
+  {
+   if(id != CHARTEVENT_OBJECT_CLICK)
+      return;
+
+   int mid = g_panel.HitTest(sparam);
+   if(mid < 0 || mid >= MID_TOTAL)
+      return;
+
+   g_runOn[mid] = !g_runOn[mid];
+   g_panelDirty = true;
+   g_panel.Refresh(g_runOn);
+   PrintFormat("Panel: module=%d -> %s", mid, g_runOn[mid] ? "ON" : "OFF");
+   ApplyPanelChange();               // 点击即生效（周末无 tick 也不等）
+  }
+//+------------------------------------------------------------------+
 //| Timer 事件：每秒刷新外观层（倒计时/网格线）                         |
 //| 注：这是"兜底加速器"而非唯一刷新路径——OnCalculate 每 tick 同样会刷新。 |
 //|     两者都保留，任何一条通路失效时外观仍能跟上行情。                 |
 //+------------------------------------------------------------------+
 void OnTimer()
   {
+   ApplyPanelChange();                 // 兜底：事件未到达时也能补齐
+
    bool changed = false;
-   changed = g_cd.Update(_Symbol, _Period)   || changed;   // 模块3：每秒刷新
-   changed = g_grid.Update(_Symbol, _Period) || changed;   // 模块1：内部节流到设定的更新间隔
-   changed = g_hs.Update(_Symbol, _Period)   || changed;   // 模块9：内部按新bar节流
+   if(ModOn(MID_CD))
+      changed = g_cd.Update(_Symbol, _Period) || changed;     // 模块3：每秒刷新
+   if(ModOn(MID_GRID))
+      changed = g_grid.Update(_Symbol, _Period) || changed;   // 模块1：内部节流到更新间隔
+   if(ModOn(MID_HS))
+      changed = g_hs.Update(_Symbol, _Period) || changed;     // 模块9：内部按新bar节流
    if(changed)
       ChartRedraw(0);
   }
