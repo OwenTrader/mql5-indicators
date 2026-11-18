@@ -138,14 +138,6 @@ mql5_skeleton/
 > 因此面板的定位是「**快速临时关闭**」，而不是替代指标属性。原本 `input` 就关闭的模块不会出现在面板上
 > （其句柄都未创建，打开也无效）；要长期启用请改 `input`。
 >
-> **双击弹窗问题**：双击面板区域若落在交易水平线（SL/TP）上，MT5 会弹出「修改订单」窗口。
-> 这是终端原生行为，指标层没有任何 API 能拦截（`CHART_DRAG_TRADE_LEVELS` 只影响拖拽，对双击无效）。
-> 只能让双击「没有命中目标」，两种模式：
-> - `InpPanelMouseGuard`（默认 **true**）：鼠标进入面板矩形时 `CHART_SHOW_TRADE_LEVELS=false`，
->   离开立即恢复。平时 SL/TP 正常可见，靠近面板时短暂隐藏。
-> - `InpPanelHideTrade`（默认 false）：面板启用期间**永久**隐藏交易水平线，最彻底但看不到 SL/TP。
-> 两者都关闭时双击仍可能弹窗，可改用 `InpPanelX/Y` 把面板挪到没有持仓线的位置。
->
 > `InpPanelX/Y` 为面板**右边缘/上边缘**距图表右边缘/顶部的像素；`InpPanelCols` 列数；`InpPanelGrid/PL/CD/MA/PAT/HS/Candle` 控制哪些模块上榜；
 > `InpPanelSignal` 控制 MACD / 震荡是否上榜（默认关，避免误触改变信号行为）。
 > 对象前缀 `MSPN_<ChartID>_`，套用模板时自动清理非本实例的遗留。
