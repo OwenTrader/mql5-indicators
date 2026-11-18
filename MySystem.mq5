@@ -15,7 +15,7 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.49"
+#property version     "1.50"
 #property description "模块化交易系统骨架：主指标聚合器"
 #property description "默认开启：网格线 + 价格折线(高/低) + K线倒计时 + 双均线(13/30 EMA，含画线)"
 #property description "默认关闭：MACD二线交叉 / 震荡触发 / MACD动量 / K线着色 / 形态识别"
@@ -108,7 +108,8 @@ enum ENUM_MOD_ID
 bool g_runOn[MID_TOTAL];      // 运行时开关（OnInit 置 true，面板点击切换）
 bool g_panelDirty  = false;   // 本轮需要按新状态清理/重建对象
 bool g_repaintAll  = false;   // 只需要绘图缓冲从 0 重画（不重算指标数据）
-long g_oldDragTrade = -1;     // 面板锁定前的「可拖拽交易水平线」原值（-1=未记录）
+long g_oldShowTrade = -1;     // 交易水平线显示原值（-1=未改动过）
+long g_oldMouseMove = -1;     // 鼠标移动事件开关原值（-1=未改动过）
 
 //--- 模块是否实际启用：只看运行时开关
 //    初始值 = 对应 input（OnInit 时拷贝），面板点击后只改 g_runOn
@@ -300,7 +301,8 @@ input bool InpPanelPAT      = true;   // 面板显示：形态识别
 input bool InpPanelHS       = true;   // 面板显示：H1水平线
 input bool InpPanelCandle   = false;  // 面板显示：K线着色
 input bool InpPanelSignal   = false;  // 面板显示：MACD / 震荡
-input bool InpPanelLockTrade = true;  // 面板启用时禁止拖动订单线(防误改SL/TP)
+input bool InpPanelHideTrade = false; // 面板启用时永久隐藏订单线(彻底但看不到SL/TP)
+input bool InpPanelMouseGuard = true; // 鼠标移到面板上时临时隐藏订单线(防双击弹窗)
 
 //--- 模块实例（全局单例）
 CMacdModule      g_macd;
@@ -495,7 +497,7 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.49");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.50");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -670,7 +672,7 @@ int OnInit()
 
    //--- 初始化自检（排查显示问题时先看这行）
    PrintFormat("MySystem v%s init: symbol=%s tf=%s MA=%s(%d/%d %s)",
-               "1.49", _Symbol, EnumToString(_Period),
+               "1.50", _Symbol, EnumToString(_Period),
                InpMaEnabled ? "ON" : "OFF", InpMaFast, InpMaSlow,
                EnumToString(InpMaMethod));
 
@@ -684,13 +686,23 @@ int OnInit()
    pn.Cols     = InpPanelCols;
    pn.FontSize = InpPanelFontSize;
 
-   //--- 面板与订单线（SL/TP）重叠时，MT5 会把点击交给交易水平线 -> 误改订单。
-   //    面板启用时关闭「鼠标拖拽交易水平线」，卸载时恢复原值。
-   if(InpPanelEnabled && InpPanelLockTrade && g_oldDragTrade < 0)
+   //--- 双击面板区域若落在交易水平线(SL/TP)上，MT5 会弹出「修改订单」窗口。
+   //    这是终端原生行为，指标无法拦截；只能让双击「没有命中目标」。
+   //    两种模式：
+   //      InpPanelHideTrade  = true  -> 面板启用期间永久隐藏交易线（彻底，但看不到 SL/TP）
+   //      InpPanelMouseGuard = true  -> 仅当鼠标进入面板矩形时临时隐藏，离开即恢复（默认）
+   if(InpPanelEnabled && (InpPanelHideTrade || InpPanelMouseGuard) && g_oldShowTrade < 0)
+      g_oldShowTrade = (long)ChartGetInteger(0, CHART_SHOW_TRADE_LEVELS);
+
+   if(InpPanelEnabled && InpPanelHideTrade)
      {
-      g_oldDragTrade = (long)ChartGetInteger(0, CHART_DRAG_TRADE_LEVELS);
-      ChartSetInteger(0, CHART_DRAG_TRADE_LEVELS, false);
-      PrintFormat("Panel: trade-level drag disabled (was %d)", (int)g_oldDragTrade);
+      ChartSetInteger(0, CHART_SHOW_TRADE_LEVELS, false);
+      PrintFormat("Panel: trade levels hidden permanently (was %d)", (int)g_oldShowTrade);
+     }
+   else if(InpPanelEnabled && InpPanelMouseGuard)
+     {
+      g_oldMouseMove = (long)ChartGetInteger(0, CHART_EVENT_MOUSE_MOVE);
+      ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
      }
 
    int    pIds[];
@@ -733,11 +745,16 @@ void OnDeinit(const int reason)
    g_hs.Release();          // 模块9：删除 H1 收盘价水平线对象
    g_panel.Release();       // 模块10：删除快捷面板对象
 
-   //--- 恢复交易水平线拖拽（仅当本指标禁用过）
-   if(g_oldDragTrade >= 0)
+   //--- 恢复图表属性（仅当本指标改动过）
+   if(g_oldShowTrade >= 0)
      {
-      ChartSetInteger(0, CHART_DRAG_TRADE_LEVELS, (bool)g_oldDragTrade);
-      g_oldDragTrade = -1;
+      ChartSetInteger(0, CHART_SHOW_TRADE_LEVELS, (bool)g_oldShowTrade);
+      g_oldShowTrade = -1;
+     }
+   if(g_oldMouseMove >= 0)
+     {
+      ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, (bool)g_oldMouseMove);
+      g_oldMouseMove = -1;
      }
    EventKillTimer();
   }
@@ -1183,6 +1200,20 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    if(id == CHARTEVENT_CHART_CHANGE)
      {
       g_panel.Layout();          // 缩放/改窗口/切品种后把面板重新贴到右上角
+      return;
+     }
+
+   //--- 鼠标进入面板矩形：临时隐藏交易水平线，让双击不会命中 SL/TP 而弹出改单窗口
+   if(id == CHARTEVENT_MOUSE_MOVE && InpPanelEnabled && InpPanelMouseGuard && !InpPanelHideTrade)
+     {
+      static bool s_in = false;
+      bool now = g_panel.InPanel((int)lparam, (int)dparam);
+      if(now != s_in)
+        {
+         s_in = now;
+         ChartSetInteger(0, CHART_SHOW_TRADE_LEVELS, now ? false : (bool)g_oldShowTrade);
+         ChartRedraw(0);
+        }
       return;
      }
 

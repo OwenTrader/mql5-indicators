@@ -47,6 +47,7 @@ private:
    int            m_panelW, m_panelH;
    int            m_lastW, m_lastH;      // 上次布局时的图表尺寸
    int            m_bx[], m_by[];        // 每个按钮的屏幕左上角（供坐标命中）
+   int            m_panelX, m_panelY;    // 面板左上角（供区域判定）
 
    //--- 按钮对象名
    string             BtnName(const int id) const
@@ -85,6 +86,15 @@ public:
          if(obj_name == BtnName(m_ids[i]))
             return(m_ids[i]);
       return(-1);
+     }
+
+   //--- 区域判定：鼠标是否落在面板矩形内（含背板空白，用于屏蔽交易线双击）
+   bool               InPanel(const int x,const int y) const
+     {
+      if(!m_created)
+         return(false);
+      return(x >= m_panelX && x < m_panelX + m_panelW &&
+             y >= m_panelY && y < m_panelY + m_panelH);
      }
 
    //--- 坐标命中：处理 CHARTEVENT_CLICK（对象点击被交易线吞掉时的兜底）
@@ -145,8 +155,10 @@ public:
       if(y0 < 0)
          y0 = 0;
 
-      m_lastW = cw;
-      m_lastH = ch;
+      m_lastW  = cw;
+      m_lastH  = ch;
+      m_panelX = x0;
+      m_panelY = y0;
 
       if(ObjectFind(0, m_bg) >= 0)
         {
