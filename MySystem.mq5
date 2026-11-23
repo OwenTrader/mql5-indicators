@@ -15,7 +15,7 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.53"
+#property version     "1.54"
 #property description "模块化交易系统骨架：主指标聚合器"
 #property description "默认开启：网格线 + K线倒计时 + H1收盘价水平线(仅<30min周期)"
 #property description "默认关闭：价格折线 / 双均线 / MACD二线交叉 / 震荡触发 / MACD动量 / K线着色 / 形态识别"
@@ -115,6 +115,71 @@ bool g_repaintAll  = false;   // 只需要绘图缓冲从 0 重画（不重算�
 bool ModOn(const ENUM_MOD_ID id)
   {
    return(g_runOn[id]);
+  }
+
+//--- 面板状态的持久化载体
+//    模板只保存「指标 input + 图表对象」，运行期变量不保存。
+//    因此把面板状态写进一个不可见的 OBJ_LABEL（固定名，不带 ChartID，
+//    这样模板复制到任何图表都能读到），模板/图表保存时会一并带上。
+//    文本格式：<9位状态>|<input指纹>
+//    · input 指纹与当前 input 不一致 => 用户改过参数，以 input 为准
+//    · 一致 => 说明是模板还原 / 重启，沿用保存的状态
+#define PANEL_STATE_OBJ  "MSSTATE_PANEL"
+
+string PanelInputKey(void)
+  {
+   return(StringFormat("%d%d%d%d%d%d%d%d%d",
+                       InpGridEnabled, InpPLEnabled, InpCdEnabled,
+                       InpMaEnabled, InpPatEnabled, InpHSEnabled,
+                       InpCandleEnabled, InpMacdEnabled, InpOscEnabled));
+  }
+
+string PanelStateString(void)
+  {
+   string st = "";
+   for(int i = 0; i < MID_TOTAL; i++)
+      st += (g_runOn[i] ? "1" : "0");
+   return(st);
+  }
+
+void SavePanelState(void)
+  {
+   if(ObjectFind(0, PANEL_STATE_OBJ) < 0)
+     {
+      ObjectCreate(0, PANEL_STATE_OBJ, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, PANEL_STATE_OBJ, OBJPROP_CORNER,     CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, PANEL_STATE_OBJ, OBJPROP_XDISTANCE,  -1000);  // 移出可视区
+      ObjectSetInteger(0, PANEL_STATE_OBJ, OBJPROP_YDISTANCE,  -1000);
+      ObjectSetInteger(0, PANEL_STATE_OBJ, OBJPROP_FONTSIZE,   1);
+      ObjectSetInteger(0, PANEL_STATE_OBJ, OBJPROP_COLOR,      clrNONE);  // 不可见
+      ObjectSetInteger(0, PANEL_STATE_OBJ, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, PANEL_STATE_OBJ, OBJPROP_HIDDEN,     true);
+     }
+   ObjectSetString(0, PANEL_STATE_OBJ, OBJPROP_TEXT,
+                   PanelStateString() + "|" + PanelInputKey());
+  }
+
+//--- 返回 true = 成功从对象恢复（g_runOn 已被覆盖）
+bool LoadPanelState(void)
+  {
+   if(ObjectFind(0, PANEL_STATE_OBJ) < 0)
+      return(false);
+
+   string txt = ObjectGetString(0, PANEL_STATE_OBJ, OBJPROP_TEXT);
+   int    bar = StringFind(txt, "|");
+   if(bar <= 0)
+      return(false);
+
+   string st  = StringSubstr(txt, 0, bar);
+   string key = StringSubstr(txt, bar + 1);
+   if(key != PanelInputKey())          // input 被手动改过：以 input 为准
+      return(false);
+   if(StringLen(st) != MID_TOTAL)
+      return(false);
+
+   for(int i = 0; i < MID_TOTAL; i++)
+      g_runOn[i] = (StringSubstr(st, i, 1) == "1");
+   return(true);
   }
 
 //--- 面板按钮注册（主指标 OnInit 内使用）
@@ -411,6 +476,11 @@ int OnInit()
    for(int i = 0; i < MID_TOTAL; i++)
       g_modReady[i] = false;
 
+   //--- 面板状态：优先用模板/图表里保存的对象（input 未被改动时）
+   bool restored = LoadPanelState();
+   if(restored)
+      PrintFormat("Panel: state restored from chart object -> %s", PanelStateString());
+
    //--- 模块6：K线着色缓冲区（plot 0 = DRAW_COLOR_CANDLES）
    SetIndexBuffer(0, CandleOpen,  INDICATOR_DATA);
    SetIndexBuffer(1, CandleHigh,  INDICATOR_DATA);
@@ -507,7 +577,7 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.53");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.54");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -705,7 +775,7 @@ int OnInit()
 
    //--- 初始化自检（排查显示问题时先看这行）
    PrintFormat("MySystem v%s init: symbol=%s tf=%s MA=%s(%d/%d %s)",
-               "1.53", _Symbol, EnumToString(_Period),
+               "1.54", _Symbol, EnumToString(_Period),
                InpMaEnabled ? "ON" : "OFF", InpMaFast, InpMaSlow,
                EnumToString(InpMaMethod));
 
@@ -738,6 +808,11 @@ int OnInit()
    if(!g_panel.Create(pn, pIds, pNames))
       return(INIT_FAILED);
    g_panel.Refresh(g_runOn);
+
+   //--- 面板状态：写回对象（模板/图表保存时会带上），
+   //    并置脏标志让首轮 ApplyPanelChange 按恢复后的状态创建模块与对象
+   SavePanelState();
+   g_panelDirty = true;
 
    //--- 首次绘制网格线
    g_grid.Update(_Symbol, _Period);
@@ -1272,6 +1347,7 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
 
    //--- 先更新按钮外观并重绘（用户立刻看到反馈），再执行对象重建/整体重画
    g_panel.Refresh(g_runOn);
+   SavePanelState();                 // 立即写回对象：模板/图表保存时带上新状态
    ChartRedraw(0);
    PrintFormat("Panel: module=%d -> %s", mid, g_runOn[mid] ? "ON" : "OFF");
 
