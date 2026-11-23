@@ -15,7 +15,7 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.54"
+#property version     "1.55"
 #property description "模块化交易系统骨架：主指标聚合器"
 #property description "默认开启：网格线 + K线倒计时 + H1收盘价水平线(仅<30min周期)"
 #property description "默认关闭：价格折线 / 双均线 / MACD二线交叉 / 震荡触发 / MACD动量 / K线着色 / 形态识别"
@@ -79,6 +79,7 @@
 #include "Modules\PriceLines.mqh" // 模块2：价格折线（高/低/开，三条折线可独立开关）
 #include "Modules\PatternSig.mqh" // 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）
 #include "Modules\HourSeg.mqh"    // 模块9：H1 收盘价水平线段（仅周期 < 30min 生效）
+#include "Modules\DailyLevels.mqh" // 模块11：前日/前周 OHLC 水平线段
 #include "Modules\Panel.mqh"      // 模块10：图表快捷面板（一键开关各模块）
 
 //--- 信号组合模式
@@ -102,6 +103,7 @@ enum ENUM_MOD_ID
    MID_CANDLE,       // 模块6 K线着色
    MID_MACD,         // 模块4 MACD
    MID_OSC,          // 模块5 震荡
+   MID_DL,           // 模块11 前日/前周 OHLC 水平线
    MID_TOTAL
   };
 
@@ -348,6 +350,17 @@ input color  InpPatBearColor = clrRed;          // 主体段阴线颜色(默认�
 input color  InpPatMidColor  = clrGray;         // 回调段/小实体颜色(默认灰)
 input color  InpPatOverlapColor = clrYellow;    // 形态重叠部分颜色(默认黄)
 
+input group "══════ 模块11：前日/前周 OHLC 水平线 ══════"
+input bool            InpDLEnabled     = true;             // 启用前日/前周OHLC水平线
+input bool            InpDLShowDaily   = true;             // 日线：画前一日OHLC(覆盖今天)
+input bool            InpDLShowWeekly  = true;             // 周线：画前一周OHLC(覆盖本周)
+input color           InpDLDailyColor  = clrDodgerBlue;    // 日线颜色
+input ENUM_LINE_STYLE InpDLDailyStyle  = STYLE_SOLID;      // 日线线型
+input int             InpDLDailyWidth  = 1;                // 日线线宽(1-5)
+input color           InpDLWeeklyColor = clrOrangeRed;     // 周线颜色
+input ENUM_LINE_STYLE InpDLWeeklyStyle = STYLE_DOT;        // 周线线型
+input int             InpDLWeeklyWidth = 1;                // 周线线宽(1-5)
+
 input group "══════ 模块10：图表快捷面板 ══════"
 input bool InpPanelEnabled  = true;   // 启用图表快捷面板
 input int  InpPanelX        = 8;      // 距右边缘(像素)
@@ -362,6 +375,7 @@ input bool InpPanelCD       = true;   // 面板显示：倒计时
 input bool InpPanelMA       = true;   // 面板显示：双均线
 input bool InpPanelPAT      = true;   // 面板显示：形态识别
 input bool InpPanelHS       = true;   // 面板显示：H1水平线
+input bool InpPanelDL       = true;   // 面板显示：日周OHLC线
 input bool InpPanelCandle   = false;  // 面板显示：K线着色
 input bool InpPanelSignal   = false;  // 面板显示：MACD / 震荡
 
@@ -376,6 +390,7 @@ CTrendModule     g_ma;      // 模块7：双均线（默认启用 13/30 EMA）
 CPriceLineModule g_pl;      // 模块2：价格折线（高/低/开）
 CPatternModule   g_pat;     // 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）
 CHourSegModule   g_hs;      // 模块9：H1 收盘价水平线段（仅 <30min 周期）
+CDailyLevelsModule g_dl;    // 模块11：前日/前周 OHLC 水平线段
 CPanelModule     g_panel;   // 模块10：图表快捷面板
 
 //--- 模块配置副本：面板「运行时打开」原本 input 关闭的模块时按需创建
@@ -384,6 +399,7 @@ CPanelModule     g_panel;   // 模块10：图表快捷面板
 CountdownSettings g_ccCfg;
 GridSettings      g_gcCfg;
 HourSegSettings   g_hsCfg;
+DailyLevelsSettings g_dlCfg;
 MacdSettings      g_macdCfg;
 RsiSettings       g_rsiCfg;
 OscSettings       g_oscCfg;
@@ -472,6 +488,7 @@ int OnInit()
    g_runOn[MID_CANDLE] = InpCandleEnabled;
    g_runOn[MID_MACD]   = InpMacdEnabled;
    g_runOn[MID_OSC]    = InpOscEnabled;
+   g_runOn[MID_DL]     = InpDLEnabled;
    g_panelDirty = false;
    for(int i = 0; i < MID_TOTAL; i++)
       g_modReady[i] = false;
@@ -577,7 +594,7 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.54");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.55");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -775,9 +792,24 @@ int OnInit()
 
    //--- 初始化自检（排查显示问题时先看这行）
    PrintFormat("MySystem v%s init: symbol=%s tf=%s MA=%s(%d/%d %s)",
-               "1.54", _Symbol, EnumToString(_Period),
+               "1.55", _Symbol, EnumToString(_Period),
                InpMaEnabled ? "ON" : "OFF", InpMaFast, InpMaSlow,
                EnumToString(InpMaMethod));
+
+   //--- 模块11：前日/前周 OHLC 水平线段
+   DailyLevelsSettings dls;
+   dls.Enabled     = true;              // 副本恒为启用：实际开关由 g_runOn 控制
+   dls.ShowDaily   = InpDLShowDaily;
+   dls.ShowWeekly  = InpDLShowWeekly;
+   dls.DailyColor  = InpDLDailyColor;
+   dls.DailyStyle  = InpDLDailyStyle;
+   dls.DailyWidth  = InpDLDailyWidth;
+   dls.WeeklyColor = InpDLWeeklyColor;
+   dls.WeeklyStyle = InpDLWeeklyStyle;
+   dls.WeeklyWidth = InpDLWeeklyWidth;
+   g_dlCfg = dls;
+   if(InpDLEnabled && !g_dl.Create(_Symbol, _Period, dls))
+      return(INIT_FAILED);
 
    //--- 模块10：图表快捷面板
    PanelSettings pn;
@@ -799,6 +831,7 @@ int OnInit()
    if(InpPanelMA)     PanelAdd(pIds, pNames, MID_MA,     "均线");
    if(InpPanelPAT)    PanelAdd(pIds, pNames, MID_PAT,    "形态");
    if(InpPanelHS)     PanelAdd(pIds, pNames, MID_HS,     "H1线");
+   if(InpPanelDL)     PanelAdd(pIds, pNames, MID_DL,     "日周");
    if(InpPanelCandle) PanelAdd(pIds, pNames, MID_CANDLE, "着色");
    if(InpPanelSignal)
      {
@@ -832,6 +865,7 @@ void OnDeinit(const int reason)
    g_pl.Release();          // 模块2：无内部资源，占位调用
    g_pat.Release();         // 模块8：无内部资源，占位调用
    g_hs.Release();          // 模块9：删除 H1 收盘价水平线对象
+   g_dl.Release();          // 模块11：删除前日/前周 OHLC 线段
    g_panel.Release();       // 模块10：删除快捷面板对象
 
    EventKillTimer();
@@ -884,7 +918,7 @@ void ApplyPanelChange(void)
      {
       if(!ModOn((ENUM_MOD_ID)m))
          continue;
-      if(m == MID_GRID || m == MID_CD || m == MID_HS)
+      if(m == MID_GRID || m == MID_CD || m == MID_HS || m == MID_DL)
          continue;                                       // 对象类单独处理
       EnsureModule(m);
      }
@@ -904,6 +938,11 @@ void ApplyPanelChange(void)
       g_hs.Release();
    else
       g_hs.Create(_Symbol, _Period, g_hsCfg);
+
+   if(!ModOn(MID_DL))
+      g_dl.Release();
+   else
+      g_dl.Create(_Symbol, _Period, g_dlCfg);
 
    //--- 缓冲类：形态关掉后必须立刻抹掉已画颜色，否则会停在图表上
    if(!ModOn(MID_PAT))
@@ -961,6 +1000,8 @@ int OnCalculate(const int rates_total,
       uiChanged = g_grid.Update(_Symbol, _Period) || uiChanged;    // 模块1：网格线（内部节流）
    if(ModOn(MID_HS))
       uiChanged = g_hs.Update(_Symbol, _Period) || uiChanged;      // 模块9：H1 水平线（按新bar节流）
+   if(ModOn(MID_DL))
+      uiChanged = g_dl.Update(_Symbol, _Period) || uiChanged;      // 模块11：日/周 OHLC 线
 
    //--- ★ 数据层：各模块「启用 + 就绪」互相独立，任一缺席只影响依赖它的信号模式
    bool enough = (rates_total >= minBars);
@@ -1370,6 +1411,8 @@ void OnTimer()
       changed = g_grid.Update(_Symbol, _Period) || changed;   // 模块1：内部节流到更新间隔
    if(ModOn(MID_HS))
       changed = g_hs.Update(_Symbol, _Period) || changed;     // 模块9：内部按新bar节流
+   if(ModOn(MID_DL))
+      changed = g_dl.Update(_Symbol, _Period) || changed;     // 模块11：日/周 OHLC 线
    if(changed)
       ChartRedraw(0);
   }
