@@ -53,7 +53,7 @@ mql5_skeleton/
 | 模块6 K线着色 | Enabled/**HideNormal**/**UseATR**/六色/ATR倍数与周期/各周期点数阈值(回退)/影线/预警 | **独立开关（v1.29 起默认关闭，InpCandleEnabled=false）**；6色K线分类、ATR自适应阈值（由 candle.mq5 提炼，plot0=DRAW_COLOR_CANDLES）。**HideNormal 默认开启 = 不绘制普通K线**，仅高亮特殊K线，普通K线交由图表原生绘制；**UseATR 默认开启**：大实体阈值 = `ATR × 倍数(默认1.5)`，ATR 未就绪时回退到「各周期最小实体点数」表 |
 | 模块7 双均线 | Enabled/Fast/Slow/Method/Price/**颜色/线型/粗细** | **v1.52 起默认关闭**（`InpMaEnabled=false`）；启用后为 13 EMA / 30 EMA（`MODE_EMA`、`PRICE_CLOSE`）。两个作用：① **画线**——plot7/plot8 输出快线与慢线，颜色/线型/粗细（1-5）可分别调整，关闭时缓冲全写 `EMPTY_VALUE`，不绘制；② **方向过滤**——任何模式产出的信号必须与双均线方向一致，否则丢弃。数据经 `Prepare()` 批量增量预取，过滤只查表 |
 | 模块8 形态识别 | Enabled/X/Y/Z/MinBody/AllowLonger/OnlyClosed/**MaxBars**/四色 | **独立开关（v1.38 起默认关闭）**；命中 `x根阳 + 1..y根阴 + z根阳`（或镜像）后对整段着色，plot6=`DRAW_COLOR_CANDLES`，涨形态绿 / 跌形态红 / 回调灰 / 重叠黄。**x/z 必须 >= 2，y 为上限**。小实体（实体 < `MinBody` 点）**不计数、不打断**。只处理最近 `MaxBars`(默认2000) 根。规则见下方说明 |
-| 模块11 日周OHLC线 | Enabled/ShowDaily/ShowWeekly/日线(颜色·线型·线宽)/周线(颜色·线型·线宽) | **默认开启**。取**上一根已收盘 D1** 的 O/H/L/C 画 4 条水平线段，覆盖**今天**（当前 D1 开盘→次日开盘）；取**上一根已收盘 W1** 的 O/H/L/C 画 4 条覆盖**本周**。日线与周线颜色/线型/线宽独立配置。对象前缀 `MSDL_<ChartID>_`，每个周期 4 个固定名对象，滚动时只改坐标 |
+| 模块11 日周OHLC线 | Enabled/ShowDaily/ShowWeekly/日线(颜色·线型·线宽)/周线(颜色·线型·线宽) | **默认开启**。取**上一根已收盘 D1** 的 O/H/L/C 画 4 条水平线段，覆盖**今天**（当前 D1 开盘→次日开盘）；取**上一根已收盘 W1** 的 O/H/L/C 画 4 条覆盖**本周**。日线默认**亮绿虚线**、周线默认**黄色实线**，颜色/线型/线宽可独立配置。对象前缀 `MSDL_<ChartID>_`，每个周期 4 个固定名对象，滚动时只改坐标 |
 | 模块10 快捷面板 | Enabled/X/Y/按钮宽高/列数/字号/各模块是否上榜 | **默认开启**。右上角一组按钮，点击即切换对应模块的运行时开关（**不改 input、不重载指标**）。按钮颜色：绿=开、灰=关。按钮是否出现只由 `InpPanelGrid/PL/CD/MA/PAT/HS/Candle/Signal` 决定，**与模块 input 开关无关**：input 关闭的模块也能从面板打开（点击时按需创建句柄，默认不占资源）。状态**随图表保存**：面板状态写入不可见对象 `MSSTATE_PANEL`（`<9位状态>|<input指纹>`），
 模板/图表保存时会一并带上；应用模板后自动还原。若 input 被手动改动（指纹不匹配）则以 input 为准 |
 | 模块9 H1收盘价水平线 | Enabled/**SpanMinutes**/PerBar/**MaxLines**/颜色/线型/线宽 | **默认开启，但只在周期 < 30min 时生效**（M1/M5/M15/M20；M30 及以上自动清空）。每小时段画一条 `OBJ_TREND` 水平线段：起点 = 该小时首根低周期K线开盘时间，长度 = `SpanMinutes`(默认60) 分钟，价格 = **该小时之前那根已完成 H1 的收盘价**。`PerBar=true` 改为每根K线各画一条。对象前缀 `MSHS_<ChartID>_`，只保留最近 `MaxLines`(默认200) 条 |
@@ -132,7 +132,7 @@ mql5_skeleton/
 > - 日线组：`iOpen/iHigh/iLow/iClose(_Symbol, PERIOD_D1, 1)`，起点 = 当前 D1 开盘（今天），
 >   终点 = 起点 + 86400 秒（次日开盘）。4 条线覆盖今天。
 > - 周线组：同样取 `PERIOD_W1` 的上一根，覆盖本周（起点 + 604800 秒）。
-> - 颜色/线型/线宽：日线与周线各一组参数，默认日线 `DodgerBlue` 实线、周线 `OrangeRed` 点线。
+> - 颜色/线型/线宽：日线与周线各一组参数，默认日线 `clrLime` 虚线、周线 `clrYellow` 实线。
 > - 关闭 `InpDLShowDaily` / `InpDLShowWeekly` 可只保留其中一组。
 > - 刷新按「当前 D1 bar 是否变化」节流（新交易日才重算），参数变更会触发 `OnInit` 重套样式。
 

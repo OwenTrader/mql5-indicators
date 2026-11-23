@@ -15,7 +15,7 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.55"
+#property version     "1.58"
 #property description "模块化交易系统骨架：主指标聚合器"
 #property description "默认开启：网格线 + K线倒计时 + H1收盘价水平线(仅<30min周期)"
 #property description "默认关闭：价格折线 / 双均线 / MACD二线交叉 / 震荡触发 / MACD动量 / K线着色 / 形态识别"
@@ -110,6 +110,8 @@ enum ENUM_MOD_ID
 bool g_runOn[MID_TOTAL];      // 运行时开关（OnInit 置 true，面板点击切换）
 bool g_panelDirty  = false;   // 本轮需要按新状态清理/重建对象
 bool g_repaintAll  = false;   // 只需要绘图缓冲从 0 重画（不重算指标数据）
+bool g_stateLoaded = false;   // 面板状态是否已处理完（含「确认无状态对象」）
+int  g_stateTries  = 0;       // 延迟恢复重试次数
 
 //--- 模块是否实际启用：只看运行时开关
 //    初始值 = 对应 input（OnInit 时拷贝），面板点击后只改 g_runOn
@@ -130,10 +132,11 @@ bool ModOn(const ENUM_MOD_ID id)
 
 string PanelInputKey(void)
   {
-   return(StringFormat("%d%d%d%d%d%d%d%d%d",
+   return(StringFormat("%d%d%d%d%d%d%d%d%d%d",
                        InpGridEnabled, InpPLEnabled, InpCdEnabled,
                        InpMaEnabled, InpPatEnabled, InpHSEnabled,
-                       InpCandleEnabled, InpMacdEnabled, InpOscEnabled));
+                       InpCandleEnabled, InpMacdEnabled, InpOscEnabled,
+                       InpDLEnabled));
   }
 
 string PanelStateString(void)
@@ -174,12 +177,20 @@ bool LoadPanelState(void)
 
    string st  = StringSubstr(txt, 0, bar);
    string key = StringSubstr(txt, bar + 1);
-   if(key != PanelInputKey())          // input 被手动改过：以 input 为准
-      return(false);
-   if(StringLen(st) != MID_TOTAL)
+   string cur = PanelInputKey();
+
+   //--- 指纹只在长度一致时才有可比性：版本升级后模块数变化，旧模板跳过指纹校验
+   if(StringLen(key) == StringLen(cur) && key != cur)
+      return(false);                   // input 被手动改过：以 input 为准
+
+   int n = StringLen(st);
+   if(n > MID_TOTAL)
+      n = MID_TOTAL;                   // 旧版本状态串更长：截断
+   if(n <= 0)
       return(false);
 
-   for(int i = 0; i < MID_TOTAL; i++)
+   //--- 逐位恢复；串长度不足（旧模板模块更少）时，剩余模块保持 input 初值
+   for(int i = 0; i < n; i++)
       g_runOn[i] = (StringSubstr(st, i, 1) == "1");
    return(true);
   }
@@ -354,11 +365,11 @@ input group "══════ 模块11：前日/前周 OHLC 水平线 ══�
 input bool            InpDLEnabled     = true;             // 启用前日/前周OHLC水平线
 input bool            InpDLShowDaily   = true;             // 日线：画前一日OHLC(覆盖今天)
 input bool            InpDLShowWeekly  = true;             // 周线：画前一周OHLC(覆盖本周)
-input color           InpDLDailyColor  = clrDodgerBlue;    // 日线颜色
-input ENUM_LINE_STYLE InpDLDailyStyle  = STYLE_SOLID;      // 日线线型
+input color           InpDLDailyColor  = clrLime;          // 日线颜色(亮绿)
+input ENUM_LINE_STYLE InpDLDailyStyle  = STYLE_DASH;       // 日线线型(虚线)
 input int             InpDLDailyWidth  = 1;                // 日线线宽(1-5)
-input color           InpDLWeeklyColor = clrOrangeRed;     // 周线颜色
-input ENUM_LINE_STYLE InpDLWeeklyStyle = STYLE_DOT;        // 周线线型
+input color           InpDLWeeklyColor = clrYellow;        // 周线颜色(黄)
+input ENUM_LINE_STYLE InpDLWeeklyStyle = STYLE_SOLID;      // 周线线型(实线)
 input int             InpDLWeeklyWidth = 1;                // 周线线宽(1-5)
 
 input group "══════ 模块10：图表快捷面板 ══════"
@@ -489,14 +500,27 @@ int OnInit()
    g_runOn[MID_MACD]   = InpMacdEnabled;
    g_runOn[MID_OSC]    = InpOscEnabled;
    g_runOn[MID_DL]     = InpDLEnabled;
-   g_panelDirty = false;
+   g_panelDirty  = false;
+   g_stateLoaded = false;              // 每次初始化都重新判定
+   g_stateTries  = 0;
    for(int i = 0; i < MID_TOTAL; i++)
       g_modReady[i] = false;
 
    //--- 面板状态：优先用模板/图表里保存的对象（input 未被改动时）
-   bool restored = LoadPanelState();
-   if(restored)
-      PrintFormat("Panel: state restored from chart object -> %s", PanelStateString());
+   //    注：模板加载时对象可能在 OnInit 之后才恢复，故这里读不到不算结论，
+   //    由 TryLoadPanelStateLate() 在前几轮 OnTimer/OnCalculate 继续尝试
+   if(LoadPanelState())
+     {
+      g_stateLoaded = true;
+      PrintFormat("Panel: state restored -> %s", PanelStateString());
+     }
+   else if(ObjectFind(0, PANEL_STATE_OBJ) >= 0)
+     {
+      //--- 对象在但格式/指纹不适用：用当前 input 覆盖
+      g_stateLoaded = true;
+      SavePanelState();
+      PrintFormat("Panel: state object rejected, rewritten from inputs");
+     }
 
    //--- 模块6：K线着色缓冲区（plot 0 = DRAW_COLOR_CANDLES）
    SetIndexBuffer(0, CandleOpen,  INDICATOR_DATA);
@@ -594,7 +618,7 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.55");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.58");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -792,7 +816,7 @@ int OnInit()
 
    //--- 初始化自检（排查显示问题时先看这行）
    PrintFormat("MySystem v%s init: symbol=%s tf=%s MA=%s(%d/%d %s)",
-               "1.55", _Symbol, EnumToString(_Period),
+               "1.58", _Symbol, EnumToString(_Period),
                InpMaEnabled ? "ON" : "OFF", InpMaFast, InpMaSlow,
                EnumToString(InpMaMethod));
 
@@ -842,9 +866,10 @@ int OnInit()
       return(INIT_FAILED);
    g_panel.Refresh(g_runOn);
 
-   //--- 面板状态：写回对象（模板/图表保存时会带上），
-   //    并置脏标志让首轮 ApplyPanelChange 按恢复后的状态创建模块与对象
-   SavePanelState();
+   //--- 面板状态：已确定（恢复成功或已覆盖）才写回；
+   //    若对象尚未出现，留给 TryLoadPanelStateLate() 处理，避免把模板状态冲掉
+   if(g_stateLoaded)
+      SavePanelState();
    g_panelDirty = true;
 
    //--- 首次绘制网格线
@@ -903,6 +928,40 @@ bool EnsureModule(const int id)
       PrintFormat("Panel: create module %d failed, err=%d", id, GetLastError());
    return(ok);
   }
+//+------------------------------------------------------------------+
+//| 延迟恢复面板状态                                                  |
+//| 模板加载时，图表对象可能晚于 OnInit 才恢复；前几轮循环里继续尝试。    |
+//| 只在前 3 秒内重试，避免长时间覆盖用户的实时操作。                    |
+//+------------------------------------------------------------------+
+void TryLoadPanelStateLate(void)
+  {
+   if(g_stateLoaded)
+      return;
+
+   if(ObjectFind(0, PANEL_STATE_OBJ) < 0)
+     {
+      if(++g_stateTries <= 3)
+         return;                       // 再等下一轮
+      //--- 一直没等到状态对象：新图表/首次挂载，按 input 建立
+      g_stateLoaded = true;
+      SavePanelState();
+      return;
+     }
+
+   g_stateLoaded = true;
+   if(!LoadPanelState())
+     {
+      SavePanelState();                // 旧格式/参数已变：用 input 覆盖
+      return;
+     }
+
+   PrintFormat("Panel: state restored (late) -> %s", PanelStateString());
+   g_panelDirty = true;
+   ApplyPanelChange();
+   g_panel.Refresh(g_runOn);
+   ChartRedraw(0);
+  }
+//+------------------------------------------------------------------+
 //+------------------------------------------------------------------+
 //| 应用面板切换：删/建对象 + 让缓冲类整段重画                          |
 //| 由 OnChartEvent 直接调用（点击即生效，不必等 tick），                |
@@ -990,7 +1049,8 @@ int OnCalculate(const int rates_total,
    //    返回值 = 对象是否真的发生变化，只有变化时才重绘（省掉每 tick 的 ChartRedraw）
    bool uiChanged = false;
 
-   //--- 面板切换（点击时已应用，这里兜底）
+   //--- 面板状态延迟恢复 + 切换应用（点击时已应用，这里兜底）
+   TryLoadPanelStateLate();
    ApplyPanelChange();
 
    //--- 外观层按运行时开关调用；关闭时不再刷新（对象已在上面的 dirty 分支删除）
@@ -1383,8 +1443,9 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
 
    s_last = now;
 
-   g_runOn[mid] = !g_runOn[mid];
-   g_panelDirty = true;
+   g_runOn[mid]  = !g_runOn[mid];
+   g_panelDirty  = true;
+   g_stateLoaded = true;               // 用户已手动操作，停止延迟恢复
 
    //--- 先更新按钮外观并重绘（用户立刻看到反馈），再执行对象重建/整体重画
    g_panel.Refresh(g_runOn);
@@ -1401,6 +1462,7 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
 //+------------------------------------------------------------------+
 void OnTimer()
   {
+   TryLoadPanelStateLate();            // 模板对象晚于 OnInit 恢复时的兜底
    ApplyPanelChange();                 // 兜底：事件未到达时也能补齐
    g_panel.CheckResize();              // 兜底：图表尺寸变化后重排面板
 

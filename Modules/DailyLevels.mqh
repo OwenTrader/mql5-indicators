@@ -1,4 +1,4 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //|                                               DailyLevels.mqh    |
 //|  模块11：前一日 / 前一周 OHLC 水平线段                              |
 //|                                                                  |
@@ -142,6 +142,33 @@ private:
       return(removed);
      }
 
+   //--- 把「D1/W1 时间戳」对齐到当前图表周期上【实际存在的第一根K线】
+   //    MT5 的 D1/W1 时间是服务器日界（如 00:00），但第一个成交 bar 可能
+   //    从 00:05 / 01:00 才开始（夏令时、经纪商偏移、缺口），直接用它当起点
+   //    会让线段从无K线的空白区开始。
+   datetime           AlignToFirstBar(const string symbol,const ENUM_TIMEFRAMES tf,
+                                      const datetime t) const
+     {
+      if(t <= 0)
+         return(t);
+
+      int k = iBarShift(symbol, tf, t, false);
+      if(k < 0)
+         return(t);
+
+      datetime tk = iTime(symbol, tf, k);
+      if(tk >= t)
+         return(tk);                 // 该 bar 正好从 t 开始
+
+      if(k > 0)                      // 取更晚的一根（仍在 t 之后）
+        {
+         datetime tn = iTime(symbol, tf, k - 1);
+         if(tn > 0 && tn >= t)
+            return(tn);
+        }
+      return(t);                     // 找不到更贴合的就退回原时间戳
+     }
+
    //--- 画一组（日线或周线）
    bool               DrawGroup(const string symbol,const ENUM_TIMEFRAMES tf,
                                 const string grp,const color clr,
@@ -155,9 +182,11 @@ private:
          return(false);
 
       //--- 覆盖范围 = 当前周期这一根（今天 / 本周）
-      datetime t1 = iTime(symbol, tf, 0);
-      if(t1 <= 0)
+      //    起点对齐到「当天/当周第一根实际K线」，而不是 D1/W1 的日界时间戳
+      datetime tRef = iTime(symbol, tf, 0);
+      if(tRef <= 0)
          return(false);
+      datetime t1 = AlignToFirstBar(symbol, _Period, tRef);
       datetime t2 = t1 + PeriodSeconds(tf);
 
       bool changed = false;
