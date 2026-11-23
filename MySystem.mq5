@@ -15,7 +15,7 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.52"
+#property version     "1.53"
 #property description "模块化交易系统骨架：主指标聚合器"
 #property description "默认开启：网格线 + K线倒计时 + H1收盘价水平线(仅<30min周期)"
 #property description "默认关闭：价格折线 / 双均线 / MACD二线交叉 / 震荡触发 / MACD动量 / K线着色 / 形态识别"
@@ -313,10 +313,22 @@ CPatternModule   g_pat;     // 模块8：形态识别（涨-回调-涨 / 跌-反
 CHourSegModule   g_hs;      // 模块9：H1 收盘价水平线段（仅 <30min 周期）
 CPanelModule     g_panel;   // 模块10：图表快捷面板
 
-//--- 面板重新开启时重建对象所需的配置副本
+//--- 模块配置副本：面板「运行时打开」原本 input 关闭的模块时按需创建
+//    注：副本里的 Enabled 一律为 true（模块一旦创建即视为启用），
+//    实际开关由 g_runOn[] 决定，故面板可以打开 input 关闭的模块
 CountdownSettings g_ccCfg;
 GridSettings      g_gcCfg;
 HourSegSettings   g_hsCfg;
+MacdSettings      g_macdCfg;
+RsiSettings       g_rsiCfg;
+OscSettings       g_oscCfg;
+CandleSettings    g_candleCfg;
+TrendSettings     g_maCfg;
+PatternSettings   g_patCfg;
+PriceLineSettings g_plCfg;
+
+bool g_modReady[MID_TOTAL];   // 各模块句柄/配置是否已创建
+bool g_rsiReady = false;      // RSI 句柄是否已创建（MACD 的子依赖）
 
 //--- 指标缓冲区
 double CandleOpen[];      // 模块6：K线着色 O/H/L/C
@@ -364,17 +376,17 @@ bool g_needFull = true;
 int WarmupBars(void)
   {
    int bars = 5;
-   if(InpMacdEnabled)
+   if(ModOn(MID_MACD))
       bars = MathMax(bars, InpMacdSlow + InpMacdSignal + 5);
-   if(InpMacdEnabled && InpMacdUseRSI)
+   if(ModOn(MID_MACD) && InpMacdUseRSI)
       bars = MathMax(bars, InpMacdRSIPeriod + 5);
-   if(InpMacdEnabled && InpMode == MODE_MOMENTUM)
+   if(ModOn(MID_MACD) && InpMode == MODE_MOMENTUM)
       bars = MathMax(bars, InpMacdLookback + InpMacdRunLen + InpMacdDecelMin + 5);
-   if(InpOscEnabled)
+   if(ModOn(MID_OSC))
       bars = MathMax(bars, InpOscK + InpOscD + InpOscSlowing + 5);
-   if(InpMaEnabled)
+   if(ModOn(MID_MA))
       bars = MathMax(bars, InpMaSlow + 5);
-   if(InpCandleEnabled && InpCdlUseATR)
+   if(ModOn(MID_CANDLE) && InpCdlUseATR)
       bars = MathMax(bars, InpCdlATRPeriod + 2);
    return(bars);
   }
@@ -396,6 +408,8 @@ int OnInit()
    g_runOn[MID_MACD]   = InpMacdEnabled;
    g_runOn[MID_OSC]    = InpOscEnabled;
    g_panelDirty = false;
+   for(int i = 0; i < MID_TOTAL; i++)
+      g_modReady[i] = false;
 
    //--- 模块6：K线着色缓冲区（plot 0 = DRAW_COLOR_CANDLES）
    SetIndexBuffer(0, CandleOpen,  INDICATOR_DATA);
@@ -493,48 +507,54 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.52");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.53");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
-   //--- 模块4：MACD（默认启用；关闭时不创建句柄，零开销）
+   //--- 模块4：MACD（input 关闭时不创建句柄；面板可运行时按需创建）
+   MacdSettings mc;
+   mc.FastPeriod     = InpMacdFast;
+   mc.SlowPeriod     = InpMacdSlow;
+   mc.SignalPeriod   = InpMacdSignal;
+   mc.Price          = InpMacdPrice;
+   mc.HistMultiplier = InpMacdHistMult;
+   g_macdCfg = mc;
+
+   RsiSettings rc;
+   rc.Period = InpMacdRSIPeriod;
+   rc.Level  = InpMacdRSILevel;
+   g_rsiCfg  = rc;
+
    if(InpMacdEnabled)
      {
-      MacdSettings mc;
-      mc.FastPeriod     = InpMacdFast;
-      mc.SlowPeriod     = InpMacdSlow;
-      mc.SignalPeriod   = InpMacdSignal;
-      mc.Price          = InpMacdPrice;
-      mc.HistMultiplier = InpMacdHistMult;
       if(!g_macd.Create(_Symbol, _Period, mc))
          return(INIT_FAILED);
+      g_modReady[MID_MACD] = true;
+      if(InpMacdUseRSI)
+        {
+         if(!g_rsi.Create(_Symbol, _Period, rc))
+            return(INIT_FAILED);
+         g_rsiReady = true;
+        }
      }
 
-   //--- 模块4b：RSI 过滤器（可选；依赖 MACD 模块，二者都开启时才创建句柄）
-   if(InpMacdEnabled && InpMacdUseRSI)
-     {
-      RsiSettings rc;
-      rc.Period = InpMacdRSIPeriod;
-      rc.Level  = InpMacdRSILevel;
-      if(!g_rsi.Create(_Symbol, _Period, rc))
-         return(INIT_FAILED);
-     }
-
-   //--- 模块5：震荡 Stoch（默认启用；关闭时不创建句柄，零开销）
+   //--- 模块5：震荡 Stoch（input 关闭时不创建句柄；面板可按需创建）
+   OscSettings oc;
+   oc.KPeriod   = InpOscK;
+   oc.DPeriod   = InpOscD;
+   oc.Slowing   = InpOscSlowing;
+   oc.BuyLevel  = InpOscBuyLevel;
+   oc.SellLevel = InpOscSellLevel;
+   g_oscCfg = oc;
    if(InpOscEnabled)
      {
-      OscSettings oc;
-      oc.KPeriod   = InpOscK;
-      oc.DPeriod   = InpOscD;
-      oc.Slowing   = InpOscSlowing;
-      oc.BuyLevel  = InpOscBuyLevel;
-      oc.SellLevel = InpOscSellLevel;
       if(!g_osc.Create(_Symbol, _Period, oc))
          return(INIT_FAILED);
+      g_modReady[MID_OSC] = true;
      }
 
    CountdownSettings cc;
-   cc.Enabled   = InpCdEnabled;
+   cc.Enabled   = true;                // 副本恒为启用：实际开关由 g_runOn 控制
    cc.FontSize  = InpCdFontSize;
    cc.FontColor = InpCdColor;
    cc.FontName  = InpCdFontName;
@@ -543,11 +563,11 @@ int OnInit()
    cc.ShowPrice = InpCdShowPrice;
    cc.Separator = InpCdSeparator;
    g_ccCfg = cc;                       // 面板重新开启时重建标签
-   if(!g_cd.Create(cc))
+   if(InpCdEnabled && !g_cd.Create(cc))
       return(INIT_FAILED);
 
    GridSettings gc;
-   gc.Enabled         = InpGridEnabled;
+   gc.Enabled         = true;          // 副本恒为启用：实际开关由 g_runOn 控制
    gc.AutoDetect      = InpGridAutoDetect;
    gc.IntervalPoints  = InpGridIntervalPts;
    gc.NumLines        = InpGridNumLines;
@@ -578,11 +598,11 @@ int OnInit()
    gc.LabelColor      = InpGridLabelColor;
    gc.LabelFont       = InpGridLabelFont;
    g_gcCfg = gc;                       // 面板重新开启时重建网格
-   if(!g_grid.Create(_Symbol, _Period, gc))
+   if(InpGridEnabled && !g_grid.Create(_Symbol, _Period, gc))
       return(INIT_FAILED);
 
    CandleSettings bc;
-   bc.Enabled              = InpCandleEnabled;
+   bc.Enabled              = true;     // 副本恒为启用：实际开关由 g_runOn 控制
    bc.HideNormalCandles    = InpCdlHideNormal;
    bc.BullBodyColor        = InpCdlBullBody;
    bc.BearBodyColor        = InpCdlBearBody;
@@ -611,44 +631,61 @@ int OnInit()
    bc.AlertOnBigBody       = InpCdlAlertBody;
    bc.AlertOnBigShadow     = InpCdlAlertShadow;
    bc.ShowDebugInfo        = InpCdlDebug;
-   if(!g_candle.Create(_Symbol, _Period, bc))
-      return(INIT_FAILED);
+   g_candleCfg = bc;
+   if(InpCandleEnabled)
+     {
+      if(!g_candle.Create(_Symbol, _Period, bc))
+         return(INIT_FAILED);
+      g_modReady[MID_CANDLE] = true;
+     }
 
-   //--- 模块7：双均线趋势（默认关闭；关闭时不创建句柄，零开销）
+   //--- 模块7：双均线趋势（input 关闭时不创建句柄；面板可按需创建）
+   TrendSettings tc;
+   tc.FastPeriod = InpMaFast;
+   tc.SlowPeriod = InpMaSlow;
+   tc.Method     = InpMaMethod;
+   tc.Price      = InpMaPrice;
+   g_maCfg = tc;
    if(InpMaEnabled)
      {
-      TrendSettings tc;
-      tc.FastPeriod = InpMaFast;
-      tc.SlowPeriod = InpMaSlow;
-      tc.Method     = InpMaMethod;
-      tc.Price      = InpMaPrice;
       if(!g_ma.Create(_Symbol, _Period, tc))
          return(INIT_FAILED);
+      g_modReady[MID_MA] = true;
      }
 
    //--- 模块2：价格折线（高/低/开；三条线可独立开关）
    PriceLineSettings pls;
-   pls.Enabled  = InpPLEnabled;
+   pls.Enabled  = true;                // 副本恒为启用：实际开关由 g_runOn 控制
    pls.ShowHigh = InpPLShowHigh;
    pls.ShowLow  = InpPLShowLow;
    pls.ShowOpen = InpPLShowOpen;
-   if(!g_pl.Create(pls))
-      return(INIT_FAILED);
+   g_plCfg = pls;
+   if(InpPLEnabled)
+     {
+      if(!g_pl.Create(pls))
+         return(INIT_FAILED);
+      g_modReady[MID_PL] = true;
+     }
 
    //--- 模块8：形态识别（涨-回调-涨 / 跌-反弹-跌）
    PatternSettings ptc;
-   ptc.Enabled       = InpPatEnabled;
+   ptc.Enabled       = true;           // 副本恒为启用：实际开关由 g_runOn 控制
    ptc.X             = InpPatX;
    ptc.Y             = InpPatY;
    ptc.Z             = InpPatZ;
    ptc.MinBodyPoints = (double)InpPatMinBody;
    ptc.AllowLonger   = InpPatAllowLonger;
-   if(!g_pat.Create(_Symbol, _Period, ptc))
-      return(INIT_FAILED);
+   g_patCfg = ptc;
+   if(InpPatEnabled)
+     {
+      if(!g_pat.Create(_Symbol, _Period, ptc))
+         return(INIT_FAILED);
+      g_modReady[MID_PAT] = true;
+     }
 
    //--- 模块9：H1 收盘价水平线段（仅 <30min 周期生效；周期不符时内部自动清空）
    HourSegSettings hsc;
-   hsc.Enabled     = InpHSEnabled;
+   hsc.Enabled     = true;             // 副本恒为启用：实际开关由 g_runOn 控制
    hsc.SpanMinutes = InpHSSpanMin;
    hsc.MaxLines    = InpHSMaxLines;
    hsc.PerBar      = InpHSPerBar;
@@ -656,7 +693,7 @@ int OnInit()
    hsc.LineStyle   = InpHSStyle;
    hsc.LineWidth   = InpHSWidth;
    g_hsCfg = hsc;                      // 面板重新开启时重建线段
-   if(!g_hs.Create(_Symbol, _Period, hsc))
+   if(InpHSEnabled && !g_hs.Create(_Symbol, _Period, hsc))
       return(INIT_FAILED);
 
    //--- 秒级定时器：为倒计时提供稳定的秒级刷新（网格模块内部自行节流）
@@ -668,7 +705,7 @@ int OnInit()
 
    //--- 初始化自检（排查显示问题时先看这行）
    PrintFormat("MySystem v%s init: symbol=%s tf=%s MA=%s(%d/%d %s)",
-               "1.52", _Symbol, EnumToString(_Period),
+               "1.53", _Symbol, EnumToString(_Period),
                InpMaEnabled ? "ON" : "OFF", InpMaFast, InpMaSlow,
                EnumToString(InpMaMethod));
 
@@ -684,19 +721,19 @@ int OnInit()
 
    int    pIds[];
    string pNames[];
-   //--- 只把「input 已启用」的模块放上面板：
-   //    input 关闭的模块连句柄都没创建，面板打开也无效，故不显示（避免误导）
-   if(InpPanelGrid   && InpGridEnabled)   PanelAdd(pIds, pNames, MID_GRID,   "网格");
-   if(InpPanelPL     && InpPLEnabled)     PanelAdd(pIds, pNames, MID_PL,     "折线");
-   if(InpPanelCD     && InpCdEnabled)     PanelAdd(pIds, pNames, MID_CD,     "倒计时");
-   if(InpPanelMA     && InpMaEnabled)     PanelAdd(pIds, pNames, MID_MA,     "均线");
-   if(InpPanelPAT    && InpPatEnabled)    PanelAdd(pIds, pNames, MID_PAT,    "形态");
-   if(InpPanelHS     && InpHSEnabled)     PanelAdd(pIds, pNames, MID_HS,     "H1线");
-   if(InpPanelCandle && InpCandleEnabled) PanelAdd(pIds, pNames, MID_CANDLE, "着色");
+   //--- 按钮只看「是否上榜」参数，与模块 input 开关无关：
+   //    input 关闭的模块也能从面板打开（点击时按需创建句柄）
+   if(InpPanelGrid)   PanelAdd(pIds, pNames, MID_GRID,   "网格");
+   if(InpPanelPL)     PanelAdd(pIds, pNames, MID_PL,     "折线");
+   if(InpPanelCD)     PanelAdd(pIds, pNames, MID_CD,     "倒计时");
+   if(InpPanelMA)     PanelAdd(pIds, pNames, MID_MA,     "均线");
+   if(InpPanelPAT)    PanelAdd(pIds, pNames, MID_PAT,    "形态");
+   if(InpPanelHS)     PanelAdd(pIds, pNames, MID_HS,     "H1线");
+   if(InpPanelCandle) PanelAdd(pIds, pNames, MID_CANDLE, "着色");
    if(InpPanelSignal)
      {
-      if(InpMacdEnabled) PanelAdd(pIds, pNames, MID_MACD, "MACD");
-      if(InpOscEnabled)  PanelAdd(pIds, pNames, MID_OSC,  "震荡");
+      PanelAdd(pIds, pNames, MID_MACD, "MACD");
+      PanelAdd(pIds, pNames, MID_OSC,  "震荡");
      }
    if(!g_panel.Create(pn, pIds, pNames))
       return(INIT_FAILED);
@@ -726,6 +763,38 @@ void OnDeinit(const int reason)
   }
 //+------------------------------------------------------------------+
 //+------------------------------------------------------------------+
+//| 按需创建模块（面板打开 input 关闭的模块时用）                      |
+//| 句柄类模块在 OnInit 未创建，这里补建；已创建的直接返回              |
+//+------------------------------------------------------------------+
+bool EnsureModule(const int id)
+  {
+   if(id < 0 || id >= MID_TOTAL)
+      return(false);
+   if(g_modReady[id])
+      return(true);
+
+   bool ok = true;
+   switch(id)
+     {
+      case MID_MACD:
+         ok = g_macd.Create(_Symbol, _Period, g_macdCfg);
+         if(ok && InpMacdUseRSI && !g_rsiReady)
+            g_rsiReady = g_rsi.Create(_Symbol, _Period, g_rsiCfg);
+         break;
+      case MID_OSC:    ok = g_osc.Create(_Symbol, _Period, g_oscCfg);       break;
+      case MID_MA:     ok = g_ma.Create(_Symbol, _Period, g_maCfg);         break;
+      case MID_CANDLE: ok = g_candle.Create(_Symbol, _Period, g_candleCfg); break;
+      case MID_PAT:    ok = g_pat.Create(_Symbol, _Period, g_patCfg);       break;
+      case MID_PL:     ok = g_pl.Create(g_plCfg);                           break;
+      default:         ok = true; break;                 // 对象类由各自 Create 处理
+     }
+
+   g_modReady[id] = ok;
+   if(!ok)
+      PrintFormat("Panel: create module %d failed, err=%d", id, GetLastError());
+   return(ok);
+  }
+//+------------------------------------------------------------------+
 //| 应用面板切换：删/建对象 + 让缓冲类整段重画                          |
 //| 由 OnChartEvent 直接调用（点击即生效，不必等 tick），                |
 //| OnCalculate / OnTimer 调用作为兜底。                              |
@@ -734,6 +803,16 @@ void ApplyPanelChange(void)
   {
    if(!g_panelDirty)
       return;
+
+   //--- 句柄类模块：面板打开时按需补建（支持打开 input 关闭的模块）
+   for(int m = 0; m < MID_TOTAL; m++)
+     {
+      if(!ModOn((ENUM_MOD_ID)m))
+         continue;
+      if(m == MID_GRID || m == MID_CD || m == MID_HS)
+         continue;                                       // 对象类单独处理
+      EnsureModule(m);
+     }
 
    //--- 对象类：关闭 -> 删对象；打开 -> 重建（不清 input、不重载指标）
    if(!ModOn(MID_GRID))
