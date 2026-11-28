@@ -40,6 +40,7 @@ private:
    string         m_bg;          // 背板对象名
    int            m_ids[];       // 按钮 -> 模块ID
    string         m_labels[];    // 按钮文字
+   bool           m_full[];      // true = 独占整行（竖向排列）
    bool           m_created;
    int            m_rows;
    //--- 布局缓存（Layout 用）
@@ -47,6 +48,7 @@ private:
    int            m_panelW, m_panelH;
    int            m_lastW, m_lastH;      // 上次布局时的图表尺寸
    int            m_bx[], m_by[];        // 每个按钮的屏幕左上角（供坐标命中）
+   int            m_bw[];                // 每个按钮的实际宽度（整行项更宽）
 
    //--- 按钮对象名
    string             BtnName(const int id) const
@@ -98,7 +100,8 @@ public:
         {
          if(i >= ArraySize(m_bx))
             continue;
-         if(x >= m_bx[i] && x < m_bx[i] + m_btnW &&
+         int bw = (i < ArraySize(m_bw)) ? m_bw[i] : m_btnW;
+         if(x >= m_bx[i] && x < m_bx[i] + bw &&
             y >= m_by[i] && y < m_by[i] + m_btnH)
             return(m_ids[i]);
         }
@@ -154,22 +157,48 @@ public:
          ObjectSetInteger(0, m_bg, OBJPROP_YDISTANCE, y0);
         }
 
-      int n = ArraySize(m_ids);
+      int n   = ArraySize(m_ids);
+      int row = 0;
+      int col = 0;
       for(int i = 0; i < n; i++)
         {
          string name = BtnName(m_ids[i]);
-         if(ObjectFind(0, name) < 0)
-            continue;
-         int row = i / m_cols;
-         int col = i % m_cols;
+         bool   full = (i < ArraySize(m_full)) ? m_full[i] : false;
+
+         if(full && col > 0)          // 整行项：先把当前行收尾
+           {
+            row++;
+            col = 0;
+           }
+
          int bx = x0 + m_pad + col * (m_btnW + m_gap);
          int by = y0 + m_pad + row * (m_btnH + m_gap);
-         ObjectSetInteger(0, name, OBJPROP_XDISTANCE, bx);
-         ObjectSetInteger(0, name, OBJPROP_YDISTANCE, by);
+
+         if(ObjectFind(0, name) >= 0)
+           {
+            ObjectSetInteger(0, name, OBJPROP_XDISTANCE, bx);
+            ObjectSetInteger(0, name, OBJPROP_YDISTANCE, by);
+           }
          if(i < ArraySize(m_bx))
            {
             m_bx[i] = bx;
             m_by[i] = by;
+            m_bw[i] = full ? (m_panelW - m_pad * 2) : m_btnW;
+           }
+
+         if(full)
+           {
+            row++;
+            col = 0;
+           }
+         else
+           {
+            col++;
+            if(col >= m_cols)
+              {
+               row++;
+               col = 0;
+              }
            }
         }
      }
@@ -187,7 +216,8 @@ public:
      }
 
    //--- 初始化：创建背板与按钮
-   bool               Create(const PanelSettings &cfg,const int &ids[],const string &labels[])
+   bool               Create(const PanelSettings &cfg,const int &ids[],const string &labels[],
+                             const bool &full[])
      {
       m_cfg = cfg;
       if(!m_cfg.Enabled)
@@ -216,17 +246,45 @@ public:
          return(true);
 
       int cols = (m_cfg.Cols > 0) ? m_cfg.Cols : 1;
-      int rows = (n + cols - 1) / cols;
 
       ArrayResize(m_ids, n);
       ArrayResize(m_labels, n);
+      ArrayResize(m_full, n);
       ArrayResize(m_bx, n);
       ArrayResize(m_by, n);
+      ArrayResize(m_bw, n);
       for(int i = 0; i < n; i++)
         {
          m_ids[i]    = ids[i];
          m_labels[i] = labels[i];
+         m_full[i]   = full[i];
         }
+
+      //--- 按「整行项」统计行数
+      int rows = 0, c0 = 0;
+      for(int i = 0; i < n; i++)
+        {
+         if(m_full[i])
+           {
+            if(c0 > 0)
+              {
+               rows++;
+               c0 = 0;
+              }
+            rows++;
+           }
+         else
+           {
+            c0++;
+            if(c0 >= cols)
+              {
+               rows++;
+               c0 = 0;
+              }
+           }
+        }
+      if(c0 > 0)
+         rows++;
 
       m_gap = 4;
       m_pad = 6;
@@ -274,7 +332,7 @@ public:
             continue;
            }
          ObjectSetInteger(0, name, OBJPROP_CORNER,      CORNER_LEFT_UPPER);
-         ObjectSetInteger(0, name, OBJPROP_XSIZE,       m_btnW);
+         ObjectSetInteger(0, name, OBJPROP_XSIZE,       m_full[i] ? (m_panelW - m_pad * 2) : m_btnW);
          ObjectSetInteger(0, name, OBJPROP_YSIZE,       m_btnH);
          ObjectSetInteger(0, name, OBJPROP_FONTSIZE,    fs);
          ObjectSetString (0, name, OBJPROP_FONT,        "Microsoft YaHei");
@@ -302,8 +360,10 @@ public:
       m_created = false;
       ArrayResize(m_ids, 0);
       ArrayResize(m_labels, 0);
+      ArrayResize(m_full, 0);
       ArrayResize(m_bx, 0);
       ArrayResize(m_by, 0);
+      ArrayResize(m_bw, 0);
      }
   };
 

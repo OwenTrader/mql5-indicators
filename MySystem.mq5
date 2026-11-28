@@ -15,7 +15,7 @@
 //|   注意：子指标须位于 MQL5\Indicators\ 下且已编译                   |
 //+------------------------------------------------------------------+
 #property copyright   "MyTradingSystem"
-#property version     "1.58"
+#property version     "1.60"
 #property description "模块化交易系统骨架：主指标聚合器"
 #property description "默认开启：网格线 + K线倒计时 + H1收盘价水平线(仅<30min周期)"
 #property description "默认关闭：价格折线 / 双均线 / MACD二线交叉 / 震荡触发 / MACD动量 / K线着色 / 形态识别"
@@ -107,6 +107,10 @@ enum ENUM_MOD_ID
    MID_TOTAL
   };
 
+#define GRID_ITEM_BASE   100          // 面板按钮 ID：网格子项起始
+#define GRID_ITEM_COUNT  6            // 整数/4分位/中位/8分位/标签/10分位
+bool g_gridOn[GRID_ITEM_COUNT];     // 网格各组件运行时开关
+
 bool g_runOn[MID_TOTAL];      // 运行时开关（OnInit 置 true，面板点击切换）
 bool g_panelDirty  = false;   // 本轮需要按新状态清理/重建对象
 bool g_repaintAll  = false;   // 只需要绘图缓冲从 0 重画（不重算指标数据）
@@ -125,18 +129,20 @@ bool ModOn(const ENUM_MOD_ID id)
 //    模板只保存「指标 input + 图表对象」，运行期变量不保存。
 //    因此把面板状态写进一个不可见的 OBJ_LABEL（固定名，不带 ChartID，
 //    这样模板复制到任何图表都能读到），模板/图表保存时会一并带上。
-//    文本格式：<9位状态>|<input指纹>
+//    文本格式：<模块位+网格位>|<input指纹>
 //    · input 指纹与当前 input 不一致 => 用户改过参数，以 input 为准
 //    · 一致 => 说明是模板还原 / 重启，沿用保存的状态
 #define PANEL_STATE_OBJ  "MSSTATE_PANEL"
 
 string PanelInputKey(void)
   {
-   return(StringFormat("%d%d%d%d%d%d%d%d%d%d",
+   return(StringFormat("%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d",
                        InpGridEnabled, InpPLEnabled, InpCdEnabled,
                        InpMaEnabled, InpPatEnabled, InpHSEnabled,
                        InpCandleEnabled, InpMacdEnabled, InpOscEnabled,
-                       InpDLEnabled));
+                       InpDLEnabled,
+                       InpGridShowInt, InpGridShowQtr, InpGridShowMid,
+                       InpGridShowEig, InpGridShowLabels, InpGridShowTenth));
   }
 
 string PanelStateString(void)
@@ -144,6 +150,8 @@ string PanelStateString(void)
    string st = "";
    for(int i = 0; i < MID_TOTAL; i++)
       st += (g_runOn[i] ? "1" : "0");
+   for(int i = 0; i < GRID_ITEM_COUNT; i++)
+      st += (g_gridOn[i] ? "1" : "0");
    return(st);
   }
 
@@ -183,26 +191,62 @@ bool LoadPanelState(void)
    if(StringLen(key) == StringLen(cur) && key != cur)
       return(false);                   // input 被手动改过：以 input 为准
 
+   int total = MID_TOTAL + GRID_ITEM_COUNT;
    int n = StringLen(st);
-   if(n > MID_TOTAL)
-      n = MID_TOTAL;                   // 旧版本状态串更长：截断
+   if(n > total)
+      n = total;                       // 旧版本状态串更长：截断
    if(n <= 0)
       return(false);
 
-   //--- 逐位恢复；串长度不足（旧模板模块更少）时，剩余模块保持 input 初值
+   //--- 逐位恢复；串长度不足（旧模板）时，剩余项保持 input 初值
    for(int i = 0; i < n; i++)
-      g_runOn[i] = (StringSubstr(st, i, 1) == "1");
+     {
+      bool on = (StringSubstr(st, i, 1) == "1");
+      if(i < MID_TOTAL)
+         g_runOn[i] = on;
+      else
+         g_gridOn[i - MID_TOTAL] = on;
+     }
    return(true);
   }
 
+//--- 把网格各开关写入配置副本（面板重新打开网格 / 延迟恢复后用）
+void SyncGridCfgFromPanel(void)
+  {
+   g_gcCfg.ShowInteger = g_gridOn[0];
+   g_gcCfg.ShowQuarter = g_gridOn[1];
+   g_gcCfg.ShowMid     = g_gridOn[2];
+   g_gcCfg.ShowEighth  = g_gridOn[3];
+   g_gcCfg.ShowLabels  = g_gridOn[4];
+   g_gcCfg.ShowTenth   = g_gridOn[5];
+  }
+
+//--- 刷新面板按钮颜色（模块位 + 网格子项位）
+void RefreshPanelButtons(void)
+  {
+   static bool st[];
+   int total = GRID_ITEM_BASE + GRID_ITEM_COUNT;
+   if(ArraySize(st) != total)
+      ArrayResize(st, total);
+   ArrayInitialize(st, false);
+   for(int i = 0; i < MID_TOTAL; i++)
+      st[i] = g_runOn[i];
+   for(int i = 0; i < GRID_ITEM_COUNT; i++)
+      st[GRID_ITEM_BASE + i] = g_gridOn[i];
+   g_panel.Refresh(st);
+  }
+
 //--- 面板按钮注册（主指标 OnInit 内使用）
-void PanelAdd(int &ids[],string &names[],const int id,const string label)
+void PanelAdd(int &ids[],string &names[],bool &fulls[],
+              const int id,const string label,const bool full_row=false)
   {
    int n = ArraySize(ids);
    ArrayResize(ids, n + 1);
    ArrayResize(names, n + 1);
+   ArrayResize(fulls, n + 1);
    ids[n]   = id;
    names[n] = label;
+   fulls[n] = full_row;
   }
 
 //=== 参数：分组收纳，只在这里暴露可调项 ==============================
@@ -236,6 +280,11 @@ input color           InpGridEigColor    = clrTeal;           // 八分位颜色
 input ENUM_LINE_STYLE InpGridEigStyle    = STYLE_DASH;        // 八分位线型
 input int             InpGridEigWidth    = 1;                 // 八分位线宽
 input int             InpGridEigFontSize = 10;                // 八分位标签字号
+input bool            InpGridShowTenth   = false;             // 显示1/10等分线(与4/8分位互斥)
+input color           InpGridTenthColor  = clrSilver;         // 1/10等分线颜色
+input ENUM_LINE_STYLE InpGridTenthStyle  = STYLE_DOT;         // 1/10等分线型
+input int             InpGridTenthWidth  = 1;                 // 1/10等分线宽
+input int             InpGridTenthFontSize = 8;               // 1/10等分标签字号
 input bool            InpGridShowLabels  = true;              // 显示价格标签
 input color           InpGridLabelColor  = clrWhite;          // 标签颜色
 input string          InpGridLabelFont   = "Consolas";        // 标签字体
@@ -387,6 +436,7 @@ input bool InpPanelMA       = true;   // 面板显示：双均线
 input bool InpPanelPAT      = true;   // 面板显示：形态识别
 input bool InpPanelHS       = true;   // 面板显示：H1水平线
 input bool InpPanelDL       = true;   // 面板显示：日周OHLC线
+input bool InpPanelGridItems = true;  // 面板显示：网格各组件的开关按钮
 input bool InpPanelCandle   = false;  // 面板显示：K线着色
 input bool InpPanelSignal   = false;  // 面板显示：MACD / 震荡
 
@@ -500,6 +550,12 @@ int OnInit()
    g_runOn[MID_MACD]   = InpMacdEnabled;
    g_runOn[MID_OSC]    = InpOscEnabled;
    g_runOn[MID_DL]     = InpDLEnabled;
+   g_gridOn[0] = InpGridShowInt;
+   g_gridOn[1] = InpGridShowQtr;
+   g_gridOn[2] = InpGridShowMid;
+   g_gridOn[3] = InpGridShowEig;
+   g_gridOn[4] = InpGridShowLabels;
+   g_gridOn[5] = InpGridShowTenth;
    g_panelDirty  = false;
    g_stateLoaded = false;              // 每次初始化都重新判定
    g_stateTries  = 0;
@@ -618,7 +674,7 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, minBars);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, minBars);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.58");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MySystem v1.60");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    //--- 装配模块：新增模块时在此加一段配置
@@ -683,29 +739,34 @@ int OnInit()
    gc.IntervalPoints  = InpGridIntervalPts;
    gc.NumLines        = InpGridNumLines;
    gc.UpdateSeconds   = InpGridUpdateSecs;
-   gc.ShowInteger     = InpGridShowInt;
+   gc.ShowInteger     = g_gridOn[0];
    gc.IntegerColor    = InpGridIntColor;
    gc.IntegerStyle    = InpGridIntStyle;
    gc.IntegerWidth    = InpGridIntWidth;
    gc.IntegerFontSize = InpGridIntFontSize;
    gc.AlertInteger    = InpGridAlertInt;
-   gc.ShowQuarter     = InpGridShowQtr;
+   gc.ShowQuarter     = g_gridOn[1];
    gc.QuarterColor    = InpGridQtrColor;
    gc.QuarterStyle    = InpGridQtrStyle;
    gc.QuarterWidth    = InpGridQtrWidth;
    gc.QuarterFontSize = InpGridQtrFontSize;
-   gc.ShowMid         = InpGridShowMid;
+   gc.ShowMid         = g_gridOn[2];
    gc.MidColor        = InpGridMidColor;
    gc.MidStyle        = InpGridMidStyle;
    gc.MidWidth        = InpGridMidWidth;
    gc.MidFontSize     = InpGridMidFontSize;
    gc.AlertMid        = InpGridAlertMid;
-   gc.ShowEighth      = InpGridShowEig;
+   gc.ShowEighth      = g_gridOn[3];
    gc.EighthColor     = InpGridEigColor;
    gc.EighthStyle     = InpGridEigStyle;
    gc.EighthWidth     = InpGridEigWidth;
    gc.EighthFontSize  = InpGridEigFontSize;
-   gc.ShowLabels      = InpGridShowLabels;
+   gc.ShowTenth       = g_gridOn[5];
+   gc.TenthColor      = InpGridTenthColor;
+   gc.TenthStyle      = InpGridTenthStyle;
+   gc.TenthWidth      = InpGridTenthWidth;
+   gc.TenthFontSize   = InpGridTenthFontSize;
+   gc.ShowLabels      = g_gridOn[4];
    gc.LabelColor      = InpGridLabelColor;
    gc.LabelFont       = InpGridLabelFont;
    g_gcCfg = gc;                       // 面板重新开启时重建网格
@@ -816,7 +877,7 @@ int OnInit()
 
    //--- 初始化自检（排查显示问题时先看这行）
    PrintFormat("MySystem v%s init: symbol=%s tf=%s MA=%s(%d/%d %s)",
-               "1.58", _Symbol, EnumToString(_Period),
+               "1.60", _Symbol, EnumToString(_Period),
                InpMaEnabled ? "ON" : "OFF", InpMaFast, InpMaSlow,
                EnumToString(InpMaMethod));
 
@@ -847,24 +908,36 @@ int OnInit()
 
    int    pIds[];
    string pNames[];
+   bool   pFull[];
    //--- 按钮只看「是否上榜」参数，与模块 input 开关无关：
    //    input 关闭的模块也能从面板打开（点击时按需创建句柄）
-   if(InpPanelGrid)   PanelAdd(pIds, pNames, MID_GRID,   "网格");
-   if(InpPanelPL)     PanelAdd(pIds, pNames, MID_PL,     "折线");
-   if(InpPanelCD)     PanelAdd(pIds, pNames, MID_CD,     "倒计时");
-   if(InpPanelMA)     PanelAdd(pIds, pNames, MID_MA,     "均线");
-   if(InpPanelPAT)    PanelAdd(pIds, pNames, MID_PAT,    "形态");
-   if(InpPanelHS)     PanelAdd(pIds, pNames, MID_HS,     "H1线");
-   if(InpPanelDL)     PanelAdd(pIds, pNames, MID_DL,     "日周");
-   if(InpPanelCandle) PanelAdd(pIds, pNames, MID_CANDLE, "着色");
+   if(InpPanelGrid)   PanelAdd(pIds, pNames, pFull, MID_GRID,   "网格");
+   if(InpPanelPL)     PanelAdd(pIds, pNames, pFull, MID_PL,     "折线");
+   if(InpPanelCD)     PanelAdd(pIds, pNames, pFull, MID_CD,     "倒计时");
+   if(InpPanelMA)     PanelAdd(pIds, pNames, pFull, MID_MA,     "均线");
+   if(InpPanelPAT)    PanelAdd(pIds, pNames, pFull, MID_PAT,    "形态");
+   if(InpPanelHS)     PanelAdd(pIds, pNames, pFull, MID_HS,     "H1线");
+   if(InpPanelDL)     PanelAdd(pIds, pNames, pFull, MID_DL,     "日周");
+   if(InpPanelCandle) PanelAdd(pIds, pNames, pFull, MID_CANDLE, "着色");
    if(InpPanelSignal)
      {
-      PanelAdd(pIds, pNames, MID_MACD, "MACD");
-      PanelAdd(pIds, pNames, MID_OSC,  "震荡");
+      PanelAdd(pIds, pNames, pFull, MID_MACD, "MACD");
+      PanelAdd(pIds, pNames, pFull, MID_OSC,  "震荡");
      }
-   if(!g_panel.Create(pn, pIds, pNames))
+
+   //--- 网格各组件：竖向排列（独占整行）
+   if(InpPanelGridItems)
+     {
+      PanelAdd(pIds, pNames, pFull, GRID_ITEM_BASE + 0, "网格·整数线",  true);
+      PanelAdd(pIds, pNames, pFull, GRID_ITEM_BASE + 1, "网格·4分位",   true);
+      PanelAdd(pIds, pNames, pFull, GRID_ITEM_BASE + 2, "网格·中位",    true);
+      PanelAdd(pIds, pNames, pFull, GRID_ITEM_BASE + 3, "网格·8分位",   true);
+      PanelAdd(pIds, pNames, pFull, GRID_ITEM_BASE + 5, "网格·10分位",  true);
+      PanelAdd(pIds, pNames, pFull, GRID_ITEM_BASE + 4, "网格·标签",    true);
+     }
+   if(!g_panel.Create(pn, pIds, pNames, pFull))
       return(INIT_FAILED);
-   g_panel.Refresh(g_runOn);
+   RefreshPanelButtons();
 
    //--- 面板状态：已确定（恢复成功或已覆盖）才写回；
    //    若对象尚未出现，留给 TryLoadPanelStateLate() 处理，避免把模板状态冲掉
@@ -956,9 +1029,12 @@ void TryLoadPanelStateLate(void)
      }
 
    PrintFormat("Panel: state restored (late) -> %s", PanelStateString());
+   for(int i = 0; i < GRID_ITEM_COUNT; i++)
+      g_grid.SetShow(i, g_gridOn[i]);
+   SyncGridCfgFromPanel();
    g_panelDirty = true;
    ApplyPanelChange();
-   g_panel.Refresh(g_runOn);
+   RefreshPanelButtons();
    ChartRedraw(0);
   }
 //+------------------------------------------------------------------+
@@ -986,7 +1062,10 @@ void ApplyPanelChange(void)
    if(!ModOn(MID_GRID))
       g_grid.Release();
    else
+     {
+      SyncGridCfgFromPanel();           // 把面板上的网格子项状态写进配置副本
       g_grid.Create(_Symbol, _Period, g_gcCfg);
+     }
 
    if(!ModOn(MID_CD))
       g_cd.Release();
@@ -1438,17 +1517,65 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    int mid = (id == CHARTEVENT_OBJECT_CLICK)
              ? g_panel.HitTest(sparam)
              : g_panel.HitTestXY((int)lparam, (int)dparam);
-   if(mid < 0 || mid >= MID_TOTAL)
+   if(mid < 0)
       return;                       // 点在图表空白处：不计时，下次点击照常响应
 
    s_last = now;
+
+   //--- 网格子项按钮：只切换该组件，不动模块总开关
+   if(mid >= GRID_ITEM_BASE)
+     {
+      int it = mid - GRID_ITEM_BASE;
+      if(it >= GRID_ITEM_COUNT)
+         return;
+      g_gridOn[it] = !g_gridOn[it];
+      g_grid.SetShow(it, g_gridOn[it]);
+
+      //--- 1/10 等分线与 4/8 分位互斥（双向）
+      if(g_gridOn[it])
+        {
+         if(it == 5)                      // 开启十分位 -> 自动关闭 4/8 分位
+           {
+            if(g_gridOn[1])
+              {
+               g_gridOn[1] = false;
+               g_grid.SetShow(1, false);
+              }
+            if(g_gridOn[3])
+              {
+               g_gridOn[3] = false;
+               g_grid.SetShow(3, false);
+              }
+           }
+         else if(it == 1 || it == 3)      // 开启 4/8 分位 -> 自动关闭十分位
+           {
+            if(g_gridOn[5])
+              {
+               g_gridOn[5] = false;
+               g_grid.SetShow(5, false);
+              }
+           }
+        }
+
+      SyncGridCfgFromPanel();
+      if(ModOn(MID_GRID))
+         g_grid.Update(_Symbol, _Period);      // 绕过节流，立即 diff sync
+      RefreshPanelButtons();
+      SavePanelState();
+      ChartRedraw(0);
+      PrintFormat("Panel: grid item %d -> %s", it, g_gridOn[it] ? "ON" : "OFF");
+      return;
+     }
+
+   if(mid >= MID_TOTAL)
+      return;
 
    g_runOn[mid]  = !g_runOn[mid];
    g_panelDirty  = true;
    g_stateLoaded = true;               // 用户已手动操作，停止延迟恢复
 
    //--- 先更新按钮外观并重绘（用户立刻看到反馈），再执行对象重建/整体重画
-   g_panel.Refresh(g_runOn);
+   RefreshPanelButtons();
    SavePanelState();                 // 立即写回对象：模板/图表保存时带上新状态
    ChartRedraw(0);
    PrintFormat("Panel: module=%d -> %s", mid, g_runOn[mid] ? "ON" : "OFF");

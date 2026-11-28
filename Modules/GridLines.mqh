@@ -24,7 +24,8 @@ enum ENUM_GRIDLINE_TYPE
    GRIDLINE_INTEGER = 0,   // 整数位
    GRIDLINE_QUARTER = 1,   // 四分之一位
    GRIDLINE_MID     = 2,   // 中位线
-   GRIDLINE_EIGHTH  = 3    // 八分位
+   GRIDLINE_EIGHTH  = 3,   // 八分位
+   GRIDLINE_TENTH   = 4    // 十分位（1/10 等分，跳过 1/2 中位点）
   };
 
 //--- 模块配置体
@@ -58,6 +59,11 @@ struct GridSettings
    int              EighthWidth;
    int              EighthFontSize;
    bool             ShowLabels;      // 显示价格标签
+   bool             ShowTenth;       // 显示1/10等分线（与4/8分位互斥）
+   color            TenthColor;
+   ENUM_LINE_STYLE  TenthStyle;
+   int              TenthWidth;
+   int              TenthFontSize;
    color            LabelColor;
    string           LabelFont;
   };
@@ -102,6 +108,7 @@ private:
          case GRIDLINE_QUARTER: return(m_cfg.QuarterColor);
          case GRIDLINE_MID:     return(m_cfg.MidColor);
          case GRIDLINE_EIGHTH:  return(m_cfg.EighthColor);
+         case GRIDLINE_TENTH:   return(m_cfg.TenthColor);
         }
       return(clrWhite);
      }
@@ -113,6 +120,7 @@ private:
          case GRIDLINE_QUARTER: return(m_cfg.QuarterStyle);
          case GRIDLINE_MID:     return(m_cfg.MidStyle);
          case GRIDLINE_EIGHTH:  return(m_cfg.EighthStyle);
+         case GRIDLINE_TENTH:   return(m_cfg.TenthStyle);
         }
       return(STYLE_SOLID);
      }
@@ -124,6 +132,7 @@ private:
          case GRIDLINE_QUARTER: return(m_cfg.QuarterWidth);
          case GRIDLINE_MID:     return(m_cfg.MidWidth);
          case GRIDLINE_EIGHTH:  return(m_cfg.EighthWidth);
+         case GRIDLINE_TENTH:   return(m_cfg.TenthWidth);
         }
       return(1);
      }
@@ -135,6 +144,7 @@ private:
          case GRIDLINE_QUARTER: return(m_cfg.QuarterFontSize);
          case GRIDLINE_MID:     return(m_cfg.MidFontSize);
          case GRIDLINE_EIGHTH:  return(m_cfg.EighthFontSize);
+         case GRIDLINE_TENTH:   return(m_cfg.TenthFontSize);
         }
       return(10);
      }
@@ -148,6 +158,7 @@ private:
          case GRIDLINE_QUARTER: return("QTR_");
          case GRIDLINE_MID:     return("MID_");
          case GRIDLINE_EIGHTH:  return("EIG_");
+         case GRIDLINE_TENTH:   return("TEN_");
         }
       return("INT_");
      }
@@ -155,6 +166,8 @@ private:
    //--- 名称 -> 类型：用 "_XXX_" 全片段精确匹配，避免子串误判
    ENUM_GRIDLINE_TYPE TypeFromName(const string name)
      {
+      if(StringFind(name, "_TEN_") > 0)
+         return(GRIDLINE_TENTH);
       if(StringFind(name, "_QTR_") > 0)
          return(GRIDLINE_QUARTER);
       if(StringFind(name, "_MID_") > 0)
@@ -173,6 +186,7 @@ private:
       StringReplace(s, "QTR_", "");
       StringReplace(s, "MID_", "");
       StringReplace(s, "EIG_", "");
+      StringReplace(s, "TEN_", "");
       return(StringToDouble(s));
      }
 
@@ -359,7 +373,7 @@ private:
       //    每档最多 8 条线（INT 1 + QTR 2 + MID 1 + EIG 4）+ 8 个标签，
       //    预留 *16 可避免同步过程中反复 ArrayResize
       string required_names[];
-      int est_count = (m_cfg.NumLines * 2 + 2) * 16 + 16;
+      int est_count = (m_cfg.NumLines * 2 + 2) * 32 + 32;   // 含十分位+标签的保守估计
       ArrayResize(required_names, est_count);
       int req_count = 0;
 
@@ -385,6 +399,18 @@ private:
             AddToRequired(level + grid_size * 0.375, GRIDLINE_EIGHTH, required_names, req_count, digits);
             AddToRequired(level + grid_size * 0.625, GRIDLINE_EIGHTH, required_names, req_count, digits);
             AddToRequired(level + grid_size * 0.875, GRIDLINE_EIGHTH, required_names, req_count, digits);
+           }
+
+         //--- 1/10 等分线：每 0.1 个整数位一条；跳过 0.5（与中位线重合）
+         if(m_cfg.ShowTenth)
+           {
+            for(int k = 1; k <= 9; k++)
+              {
+               if(k == 5)
+                  continue;
+               AddToRequired(level + grid_size * (k / 10.0), GRIDLINE_TENTH,
+                             required_names, req_count, digits);
+              }
            }
         }
 
@@ -573,6 +599,27 @@ public:
       //--- 前缀为空时 ObjectsDeleteAll(0,"") 会删光整张图表的对象，必须拦住
       if(StringLen(m_prefix) > 1)
          ObjectsDeleteAll(0, m_prefix);
+     }
+
+   //--- 运行时开关某一类线条（面板按钮用）
+   //    item: 0=整数 1=四分位 2=中位 3=八分位 4=价格标签 5=十分位
+   //    修改后把节流计时清零，下一轮 Update 立即按新配置做 diff sync
+   bool               SetShow(const int item,const bool on)
+     {
+      bool old;
+      switch(item)
+        {
+         case 0: old = m_cfg.ShowInteger; m_cfg.ShowInteger = on; break;
+         case 1: old = m_cfg.ShowQuarter; m_cfg.ShowQuarter = on; break;
+         case 2: old = m_cfg.ShowMid;     m_cfg.ShowMid     = on; break;
+         case 3: old = m_cfg.ShowEighth;  m_cfg.ShowEighth  = on; break;
+         case 4: old = m_cfg.ShowLabels;  m_cfg.ShowLabels  = on; break;
+         case 5: old = m_cfg.ShowTenth;   m_cfg.ShowTenth   = on; break;
+         default: return(false);
+        }
+      m_lastUpdate = 0;
+      m_styleDirty = true;
+      return(old != on);
      }
 
    //--- 刷新：内部节流，距上次同步不足间隔秒数则跳过
